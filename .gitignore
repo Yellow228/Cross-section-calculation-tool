@@ -1,0 +1,21 @@
+# ===== Python 环境 / 缓存 =====
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# ===== 构建与打包产物 =====
+dist/
+build/
+build_prev_*/
+
+# ===== 运行输出 / 临时文件 =====
+output/
+_*.txt
+
+# ===== 系统 / 编辑器 =====
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

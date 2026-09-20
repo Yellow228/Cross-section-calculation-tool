@@ -1,0 +1,192 @@
+"""结果导出。CSV 部分仅用标准库；xlsx 部分惰性导入 openpyxl。
+
+输出格式完全沿用原 MATLAB（文件名、列名、小数位数），保证下游流程无需改动。
+
+⚠ 待回归验证点：
+  断面起终点坐标及水位.csv 的"百年一遇水位"一列，MATLAB 用 fprintf('%s', 数值)，
+  实际走 num2str 的 short 格式（4 位小数）。此处用 matlab_num2str 近似，
+  需用真实数据比对确认。
+
+⚠ 编码：CSV 一律按 `Config.csv_encoding` 写出，默认 `utf-8-sig`（UTF-8 带 BOM）。
+  中文 Windows 的 Excel / WPS 打开 CSV 时按系统 ANSI(GBK) 解码，无 BOM 的 UTF-8
+  会被误判成 GBK，中文全部变乱码（"断面" → "鏂潰"）。带 BOM 即可正常识别。
+  此处刻意**不沿用** MATLAB 的 GBK 行为——旧版 Excel 只认 ANSI，
+  现代 Excel/WPS/其他工具都能正确读带 BOM 的 UTF-8，兼容面更宽。
+"""
+
+from __future__ import annotations
+
+import csv
+import os
+from typing import Optional
+
+from .config import Config
+from .model import Project, Section, SectionResult, TerrainInfo
+
+
+def matlab_num2str(v: float) -> str:
+    """近似 MATLAB num2str 的默认（short）格式：整数不带小数，其余 4 位小数。"""
+    if v != v:
+        return "NaN"
+    if v == int(v) and abs(v) < 1e15:
+        return str(int(v))
+    return f"{v:.4f}"
+
+
+def _write_xy_rows(w, sec: Section, lp, ls, rp, rs) -> None:
+    """写一个断面的左岸(Z)、右岸(Y)两条淹没交点记录。"""
+    if lp is not None:
+        w.writerow([f"{sec.name}Z", f"{lp[0]:.6f}", f"{lp[1]:.6f}", ls])
+    if rp is not None:
+        w.writerow([f"{sec.name}Y", f"{rp[0]:.6f}", f"{rp[1]:.6f}", rs])
+
+
+def _disaster_row(sec: Section, res: SectionResult, info: TerrainInfo, cfg: Config):
+    """成灾水位那一行；本断面没有合法成灾水位索引时返回 None。
+
+    ⚠ 必须取**本断面**的 info。旧实现写成遍历全部 infos 取最后一个满足边界条件的，
+      索引会串到别的断面，导致坐标算错——同一条纵断面线上各断面点数相近时，
+      几乎每个断面都会错。单断面的测试恰好掩盖了这个问题。
+    """
+    if not (0 <= info.disaster_idx < sec.n_points):
+        return None
+    label = (f"{sec.name}成灾水位:{matlab_num2str(info.disaster_level)}"
+             f"成灾流量:{matlab_num2str(res.disaster_flow)}")
+    return [label,
+            f"{sec.x[info.disaster_idx]:.6f}",
+            f"{sec.y[info.disaster_idx]:.6f}",
+            cfg.ICON_DISASTER]
+
+
+def export_inundation_csv(path: str, sections: list[Section],
+                          results: list[SectionResult], infos: list[TerrainInfo],
+                          cfg: Config) -> None:
+    """淹没线坐标 CSV（原 MATLAB 口径）：名称,平面坐标X,平面坐标Y,图标样式
+
+    内容为 Hs1（设计水位+加高）的左右岸交点，附可选的成灾水位行。
+    """
+    with open(path, "w", encoding=cfg.csv_encoding, newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["名称", "平面坐标X", "平面坐标Y", "图标样式"])
+        for sec, res, info in zip(sections, results, infos):
+            _write_xy_rows(w, sec, res.left_point, res.left_status,
+                           res.right_point, res.right_status)
+            if cfg.output_disaster_level:
+                row = _disaster_row(sec, res, info, cfg)
+                if row is not None:
+                    w.writerow(row)
+
+
+def export_range_csv(path: str, sections: list[Section],
+                     results: list[SectionResult], cfg: Config,
+                     raised: bool) -> None:
+    """淹没范围坐标 CSV（只含左右岸交点，不含成灾水位）。
+
+    raised=True  -> 设计水位加高（Hs1 = Hs + 加高幅度）的淹没范围
+    raised=False -> 设计水位（Hs）的淹没范围
+    """
+    with open(path, "w", encoding=cfg.csv_encoding, newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["名称", "平面坐标X", "平面坐标Y", "图标样式"])
+        for sec, res in zip(sections, results):
+            if raised:
+                _write_xy_rows(w, sec, res.left_point, res.left_status,
+                               res.right_point, res.right_status)
+            else:
+                _write_xy_rows(w, sec, res.left_point_hs, res.left_status_hs,
+                               res.right_point_hs, res.right_status_hs)
+
+
+def export_disaster_csv(path: str, sections: list[Section],
+                        results: list[SectionResult], infos: list[TerrainInfo],
+                        cfg: Config) -> None:
+    """成灾水位坐标 CSV：只含成灾水位那一行（格式同淹没线坐标）。"""
+    with open(path, "w", encoding=cfg.csv_encoding, newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["名称", "平面坐标X", "平面坐标Y", "图标样式"])
+        for sec, res, info in zip(sections, results, infos):
+            row = _disaster_row(sec, res, info, cfg)
+            if row is not None:
+                w.writerow(row)
+
+
+def export_rating_csv(path: str, sections: list[Section],
+                      results: list[SectionResult],
+                      encoding: str = "utf-8-sig") -> None:
+    """水位流量关系曲线 CSV：每断面一段，空行分隔。"""
+    with open(path, "w", encoding=encoding, newline="") as f:
+        for sec, res in zip(sections, results):
+            f.write(f"断面={sec.name}\n")
+            f.write("水位/m,流量/m3/s,面积/m2,湿周,顶宽/m\n")
+            for h, q, a, p, b in zip(res.hvec, res.qvec, res.avec, res.pvec, res.bvec):
+                f.write(f"{h:.6f},{q:.6f},{a:.6f},{p:.6f},{b:.6f}\n")
+            f.write("\n")
+
+
+def export_endpoint_csv(path: str, sections: list[Section],
+                        results: list[SectionResult],
+                        encoding: str = "utf-8-sig") -> None:
+    """断面起终点坐标及水位 CSV：名称,平面坐标[X+Y],百年一遇水位（m）"""
+    with open(path, "w", encoding=encoding, newline="") as f:
+        f.write("名称,平面坐标[X+Y],百年一遇水位（m）\n")
+        for sec, res in zip(sections, results):
+            xy = sec.duanmian_xy()
+            f.write(f'{sec.name},"{xy}",{matlab_num2str(res.design_level)}\n')
+
+
+def export_section_names_xlsx(path: str, names: list[str]) -> None:
+    """断面编号参考 xlsx（对应原 xlswrite(..., 'A2')）。需要 openpyxl。"""
+    try:
+        from openpyxl import Workbook
+    except ImportError as e:      # pragma: no cover - 依赖未装时
+        raise RuntimeError("导出 xlsx 需要 openpyxl，请先安装依赖") from e
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    for i, name in enumerate(names, start=2):
+        ws.cell(row=i, column=1, value=name)
+    wb.save(path)
+
+
+def export_all(project: Project,
+               results: dict[str, SectionResult],
+               infos: dict[str, TerrainInfo],
+               cfg: Config,
+               out_dir: Optional[str] = None) -> list[str]:
+    """按纵断面线分目录导出全部结果，返回生成的文件路径列表。"""
+    out_dir = out_dir or cfg.output_dir
+    written: list[str] = []
+
+    for line in project.profile_lines:
+        line_dir = out_dir if len(project.profile_lines) == 1 else os.path.join(out_dir, line.name)
+        os.makedirs(line_dir, exist_ok=True)
+
+        secs = line.sections
+        res_list = [results[s.name] for s in secs]
+        info_list = [infos[s.name] for s in secs]
+
+        p1 = os.path.join(line_dir, f"{line.name}淹没线坐标输出结果.csv")
+        export_inundation_csv(p1, secs, res_list, info_list, cfg)
+
+        p2 = os.path.join(line_dir, f"{line.name}水位流量关系曲线.csv")
+        export_rating_csv(p2, secs, res_list, cfg.csv_encoding)
+
+        p3 = os.path.join(line_dir, "断面起终点坐标及水位.csv")
+        export_endpoint_csv(p3, secs, res_list, cfg.csv_encoding)
+
+        # 新增：把原"淹没线坐标"按水位口径拆成三份
+        p4 = os.path.join(line_dir, f"{line.name}设计水位加高淹没范围坐标.csv")
+        export_range_csv(p4, secs, res_list, cfg, raised=True)
+
+        p5 = os.path.join(line_dir, f"{line.name}设计水位淹没范围坐标.csv")
+        export_range_csv(p5, secs, res_list, cfg, raised=False)
+
+        written.extend([p1, p2, p3, p4, p5])
+
+        if cfg.output_disaster_level:
+            p6 = os.path.join(line_dir, f"{line.name}成灾水位坐标.csv")
+            export_disaster_csv(p6, secs, res_list, info_list, cfg)
+            written.append(p6)
+
+    return written

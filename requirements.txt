@@ -1,0 +1,46 @@
+# 河道断面水位-流量关系计算工具 —— 完整依赖清单（离线安装用）
+#
+# 目标平台: Windows x86_64, Python 3.13（工作区 .venv）
+# wheel 下载目录: E:\VSCODE\duanmianjisuan\wheels
+# 下载 URL 清单:  wheels_urls.txt  （21 个 URL，逐行一个，直接用浏览器或下载工具取）
+# 总体积:        约 108 MB（已剔除 PySide6-Addons 的 160 MB）
+# 详细清单:       wheels_report.txt（包名 / 版本 / 文件名 / URL）
+#
+# 全部 wheel 下载完毕后，用这条命令离线安装（不联网、不碰全局）：
+#   E:\VSCODE\duanmianjisuan\.venv\Scripts\python.exe -m pip install ^
+#     --no-index --find-links "E:\VSCODE\duanmianjisuan\wheels" ^
+#     -r "E:\VSCODE\duanmianjisuan\requirements.txt"
+
+# ---------- 数值计算（core 层不用，但 matplotlib 依赖）----------
+numpy==2.5.3
+
+# ---------- 绘图（嵌入 Qt 窗口）----------
+matplotlib==3.11.2
+contourpy==1.4.0
+cycler==0.12.1
+fonttools==4.65.0
+kiwisolver==1.5.1
+pillow==12.3.0
+packaging==26.3
+pyparsing==3.3.2
+python-dateutil==2.9.0.post0
+six==1.17.0
+
+# ---------- Excel 读写（仅 reader.py / exporter.py 使用）----------
+openpyxl==3.1.5
+et-xmlfile==2.0.0
+
+# ---------- GUI 框架（LGPL，便于日后打包分发）----------
+# 只装 Essentials：QtCore / QtGui / QtWidgets 已足够跑界面和嵌入 matplotlib。
+# 不装 PySide6-Addons（160 MB，含 QtWebEngine / Qt3D / QtCharts，本工具用不到），
+# 也不装 PySide6（它只是同时依赖 Essentials + Addons 的空壳元包）。
+PySide6-Essentials==6.11.2
+shiboken6==6.11.2
+
+# ---------- 打包 exe ----------
+PyInstaller==6.22.3
+altgraph==0.17.5
+pefile==2024.8.26
+pywin32-ctypes==0.2.3
+pyinstaller-hooks-contrib==2026.7
+setuptools==84.0.0
