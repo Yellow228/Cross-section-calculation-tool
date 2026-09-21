@@ -38,7 +38,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
 from core import edit as edit_mod
 from core.model import Section
 
-from .canvas_base import COLOR_BED, COLOR_PICK, PlotPanel
+from .canvas_base import (COLOR_BED, COLOR_PICK, PlotPanel, place_hover_note)
 
 #: 吸附半径（屏幕像素）
 SNAP_PX = 16.0
@@ -111,6 +111,10 @@ class SectionEditorDialog(QDialog):
         self._cur: dict | None = None       # 最近一次提交后的状态（撤销用）
         self._undo: list[dict] = []
         self._redo: list[dict] = []
+        #: 是否跟随主界面的断面选择变化（窗口开着时主界面换断面，这里自动跟）。
+        #: 用户在确认框里选「否」时置 False 并保持，直到重新打开窗口；
+        #: 见 `follow()`。
+        self.follow_selection = True
 
         self._drag_idx: int | None = None
         self._hover_idx: int | None = None
@@ -224,8 +228,25 @@ class SectionEditorDialog(QDialog):
         self.btn_paste.setEnabled(False)
 
     # ---------------- 外部接口 ----------------
+    @property
+    def has_unsaved_changes(self) -> bool:
+        """相对「打开这个断面时」有没有改动过。
+
+        用来决定切断面时要不要先问一句。注意判据是**与 `_base` 比对**而不是
+        "撤销栈非空"：用户改完又按了「还原」，撤销栈里仍有历史，
+        但断面已经回到原样，这时不该再拦着不让切。
+        """
+        if self.sec is None or self._base is None:
+            return False
+        return edit_mod.snapshot(self.sec) != self._base
+
     def set_context(self, sec: Section | None, chainage: float | None = None):
-        """主窗口在弹出前把当前断面推进来。"""
+        """主窗口把要编辑的断面推进来。
+
+        打开窗口时调一次；窗口开着时主界面换断面也会再调（跟随选择）。
+        两种情形共用，所以这里**重置**全部会话状态：撤销/重做清空、
+        `_base` 重取——撤销栈跨断面会让人撤销到别的断面上去。
+        """
         self.sec = sec
         self._chainage = chainage
         self._drag_idx = None
@@ -246,6 +267,36 @@ class SectionEditorDialog(QDialog):
         self._apply_edit_mode()
         self._refresh_plot()
         self._update_head()
+
+    def follow(self, sec: Section | None, chainage: float | None = None) -> bool:
+        """主界面换了断面：这个窗口要不要跟过去。
+
+        返回 True 表示已经跟过去（或本来就该跟），False 表示用户选择留在
+        原断面。留在原断面时 `follow_selection` 置 False——**这一条是必须的**：
+        否则主界面「行号没变」之类的路径会反复进来问同一句话。
+        `follow_selection` 会在下次 `_open_section_editor()` 里复位。
+
+        有未保存改动时先问一句。编辑是**实时生效**的（改一下主窗口就重算并标脏），
+        所以"切走"并不会丢数据——这里拦一下是防用户误以为切走会丢而不敢切，
+        也防他真的以为切走 = 放弃改动。
+        """
+        if self.sec is sec or not self.follow_selection:
+            return True
+        if self.isVisible() and self.has_unsaved_changes:
+            ans = QMessageBox.question(
+                self, "切换断面",
+                f"【{self.sec.name}】已有改动（改动已实时生效并保存到工程）。\n\n"
+                f"切换到【{sec.name if sec is not None else '（无）'}】后，"
+                f"本窗口的撤销/重做历史将清空，"
+                f"【{self.sec.name}】的改动不受影响。\n\n确定切换吗？",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+            if ans != QMessageBox.Yes:
+                self.follow_selection = False
+                self._set_note(f"已留在【{self.sec.name}】。"
+                               f"关掉本窗口再打开即可切到别的断面。")
+                return False
+        self.set_context(sec, chainage)
+        return True
 
     def popup(self):
         self.show()
@@ -659,11 +710,12 @@ class SectionEditorDialog(QDialog):
         if i is not None and 0 <= i < len(s):
             ax.plot([s[i]], [z[i]], marker="o", ms=9.0, color=COLOR_PICK,
                     mec="white", mew=1.6, zorder=8)
-            ax.annotate(f"第 {i + 1} 点　起点距 {s[i]:.2f} m　高程 {z[i]:.2f} m",
-                        (s[i], z[i]), textcoords="offset points", xytext=(12, 16),
-                        fontsize=9, color="#185FA5",
-                        bbox=dict(boxstyle="round,pad=0.45", fc="#E6F1FB",
-                                  ec="#85B7EB", lw=0.8), zorder=9)
+            # 用共用定位函数：测点靠右时框自动翻到左侧，避免溢出轴外把
+            # 绘图区挤窄（见 canvas_base.place_hover_note 的说明）
+            place_hover_note(
+                ax,
+                f"第 {i + 1} 点　起点距 {s[i]:.2f} m　高程 {z[i]:.2f} m",
+                s[i], z[i], rad=12.0, dy=16.0)
 
         ax.set_xlabel("起点距 (m)")
         ax.set_ylabel("高程 (m)")

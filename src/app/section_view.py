@@ -24,7 +24,7 @@ from core.model import Section, SectionResult, TerrainInfo
 
 from .canvas_base import (COLOR_BED, COLOR_DESIGN, COLOR_DISASTER, COLOR_PEAK,
                           COLOR_PICK, COLOR_PLUS, COLOR_THALWEG, COLOR_TURN,
-                          COLOR_WARN, COLOR_WATER, PlotPanel)
+                          COLOR_WARN, COLOR_WATER, PlotPanel, place_hover_note)
 
 #: 拾取目标 -> 中文名。键同时用作信号参数，务必与主窗口/面板保持一致。
 PICK_LABELS = {
@@ -491,7 +491,6 @@ class SectionView(QWidget):
                 mec="white", mew=1.6, zorder=9)
         txt = (f"起点距 {s[hi]:.1f} m　高程 {z[hi]:.2f} m\n"
                f"点击设为{PICK_LABELS[self._pick_mode]}（第 {hi + 1} 个测点）")
-        ax.annotate(txt, (s[hi], z[hi]), textcoords="offset points",
-                    xytext=(14, 18), fontsize=9, color="#185FA5",
-                    bbox=dict(boxstyle="round,pad=0.45", fc="#E6F1FB",
-                              ec="#85B7EB", lw=0.8), zorder=10)
+        # 用共用定位函数：测点靠右时框会自动翻到左侧，避免溢出轴外
+        # 把绘图区挤窄（见 canvas_base.place_hover_note 的说明）
+        place_hover_note(ax, txt, s[hi], z[hi])

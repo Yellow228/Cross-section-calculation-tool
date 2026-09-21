@@ -116,9 +116,9 @@
 | `dialogs.py` | 顶部菜单栏弹出的四个非模态面板：计算设置 / 批量填写 / 比降推算 / **分区调节 + 成灾水位**（后两个见 §五 #13） |
 | `widgets.py` | `make_spin()` 等共用控件 |
 | `param_panel.py` | 左侧「当前断面参数」精调面板 |
-| `canvas_base.py` | matplotlib 画布基类 |
+| `canvas_base.py` | matplotlib 画布基类；悬停提示框统一走 `place_hover_note()`（见坑 #18） |
 | `section_view.py` | 断面形态图；**图上拾取模式**（`begin_pick` / `picked` / `cancel_pick`，只吸附实测测点）；手动与自动的记号区分 |
-| `section_editor.py` | **编辑横断面**窗口（左表格 + 右可拖动断面图）；`PointTable` 处理 Excel 粘贴；表格默认只读，见 §五 #16 / #17 |
+| `section_editor.py` | **编辑横断面**窗口（左表格 + 右可拖动断面图）；`PointTable` 处理 Excel 粘贴；表格默认只读，见 §五 #16 / #17；窗口跟随主界面换断面，见 §五 #19 |
 | `rating_view.py` / `profile_view.py` | 水位–流量曲线 / 沿河纵剖面 |
 
 ### `tools/` — 辅助脚本（不是一次性脚本，都值得保留）
@@ -462,6 +462,88 @@ Qt 默认的 Ctrl+V 会把**整段剪贴板塞进一个单元格**；Excel 复�
 
 **护栏**：`gui_smoke.py` 里插一段含"高程"二字的剪贴板，断言粘贴返回 0 且
 `sec.z` 逐项未变；另断言越界时行数不变、有明确"忽略 N 行"提示。
+
+### #18 悬停提示框会让 `tight_layout()` 把绘图区挤窄
+
+**症状**：鼠标移到靠右侧的实测测点上，出现"起点距 … 高程 …"的小蓝框时，
+**整个绘图区突然变窄**；鼠标移开又弹回来，一闪一闪地缩。
+断面编辑窗口与「分区调节 / 成灾水位」拾取窗口都有。
+
+**原因**：`fig.tight_layout()` 会把**所有可见 artist 的包围盒**算进去。
+提示框锚在测点上、往右偏十几点，测点靠右时就溢出到轴外；
+于是 tight_layout 为了给框腾地方而**压缩绘图区**。
+实测（`probe_hover_bbox.py`，断面 sls2-6）：悬停第 10 点时轴宽
+**551 → 401 px，窄了 27%**。
+
+**修法两层，缺一不可**（都在 `app/canvas_base.py`）：
+
+1. `PlotPanel._exclude_hover_notes()`：给框 `set_in_layout(False)`，
+   把它排除出 tight_layout 的包围盒计算——**这才是画布变窄的直接原因**。
+   必须**早于** `tight_layout()`。
+2. `PlotPanel._place_hover_notes()`：在 tight_layout **之后**，按框的实际
+   屏幕宽度决定摆测点右侧还是翻到左侧。必须**晚于** `tight_layout()`。
+
+三个实际踩到的坑：
+
+- **不能在 `place_hover_note()` 里就定位**。它是在 `_refresh_plot()` 中途被调的，
+  那时轴还是**上一次布局**的几何：draw 前 `get_window_extent()` 给 573 px、
+  draw 后 613 px，差 40 px。拿旧矩形判断"右边放不下"，**每个点都判成溢出**、
+  全部翻到左边，比不翻还难看。
+- **`xytext` 是点、`get_window_extent()` 是像素**，差 `dpi/72` 倍（dpi=100 时 1.39）。
+  把 `bb.width` 直接当点用会把偏移算成几百点、把框甩到轴外，
+  而且看起来"确实翻到左边了"，很难发现算错了。
+- **认框不能用 `t.xy`**。拾取图层画高亮测点也有个 `Annotation`，
+  `xy` 同样等于该点坐标——`t.xy == (s, z)` 会先撞上那个 8.5 px 的圆点，
+  量到的是圆点的 39 px 包围盒，看起来"完全在轴内"其实没量到框。
+  按 `place_hover_note()` 打的 `gid="hover-note:rad:dy"` 认才准。
+  （也不能用 `t.xycoords` 判类型：那是 `Annotation` 才有的属性，
+  `ax.text()` 建的 `Text` 没有，直接取会 `AttributeError`。）
+- 量之前必须 `canvas.draw()`（同步）：`draw_idle()` 是**异步**的，
+  不先真画一次，`transData` 与 `get_window_extent` 都还是旧值。
+
+**护栏**：`gui_smoke.py` 在两个窗口里都遍历全部测点，断言悬停时**轴宽恒定**
+（截距 ≤ 0.5 px），并断言最右测点的框翻到左侧且完全落在轴内。
+`probe_hover_bbox.py` 是可随时重跑的定量探针。
+
+### #19 编辑窗口跟随主界面换断面：同步点不能只挂在一个信号上
+
+**症状**：主界面换断面（换行、换线）时，编辑窗口纹丝不动，还停在上一个断面上。
+用户以为在改 A，实际改的是 B。
+
+**原因不是"忘了接信号"，而是同步点挂得不够**。断面选择有**两条**入口：
+
+| 路径 | 触发 | 注意 |
+|---|---|---|
+| 同一条线内换行 | `lst_secs.currentRowChanged` → `_on_section_changed` | 正常发信号 |
+| **换纵断面线** | `lst_lines.currentRowChanged` → `_on_line_changed` | `lst_secs` 是 **`blockSignals(True)` 重建**的，`setCurrentRow(0)` **不触发** `_on_section_changed` |
+
+只挂在 `_on_section_changed` 上，换线路径就整条漏掉。
+（`_refresh_manual_panels()` 早就因为同样的原因被无条件调用过，注释里写着——
+编辑窗口当时没跟上这条经验。）
+
+→ 抽一个 `_sync_editor_selection(sec)`，**两条路径都调**。
+`follow()` 里有 `if self.sec is sec: return`，所以重复调用是幂等的。
+
+**几个必须一起处理的行为**：
+
+- **有未保存改动时先问一句**，用户选「否」则留在原断面。
+  选「否」之后要把 `follow_selection` 置 **False 并保持**，
+  否则主界面任何一次同步都会再问一遍（反复追问）。
+  该标志在 `_open_section_editor()` 里复位——用户再点一次菜单就该恢复正常跟随。
+- **换断面必须清空撤销/重做并重取 `_base`**（直接复用 `set_context()`）。
+  撤销栈跨断面会让人一路撤销到**别的断面**的数据上。
+- **"有没有改动"的判据是与 `_base` 快照比对，不是"撤销栈非空"**。
+  用户改完又点「还原」，撤销栈里仍有历史，但断面已回到原样，这时不该再拦。
+
+**⚠ 测试时的一个大坑**：`section_editor` 是
+`from PySide6.QtWidgets import QMessageBox`——把类**直接绑进自己的命名空间**。
+只替换 `main_window.QMessageBox` 挡不住 `follow()` 里的确认框，
+离屏测试会**永久阻塞**（本次探针就这么卡死过一次，只能靠 SIGTERM 收）。
+两个模块都要换。
+
+**护栏**：`gui_smoke.py` 覆盖同线内换行 / 换线 / 选「否」留下且不反复追问 /
+选「是」跟随且历史清空 / 还原后不再拦截，共 6 条断言。
+`tools/probe_editor_follow.py` 是同一批场景的独立探针。
 
 ---
 

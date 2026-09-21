@@ -395,9 +395,12 @@ try:
         Yes, No, Ok = 1, 0, 1
         Save, Discard, Cancel = 2, 3, 4
         answer = 1
+        #: 记录每次确认框的调用，用来断言"该问时问了几次"（见编辑窗口跟随那段）
+        asked: list = []
 
         @classmethod
         def question(cls, *a, **k):
+            cls.asked.append(a)
             return cls.answer
 
         @staticmethod
@@ -457,6 +460,66 @@ try:
             "拾取时应自动切到「断面形态」页"
         assert win.dlg_zone.lbl_pick.isVisible(), "面板未显示拾取提示"
         out.append("拾取模式：自动切换页签 + 面板提示 OK")
+
+        # ---- 悬停提示框不得把绘图区挤窄（回归）----
+        # 曾经的问题：悬停在靠右的测点上时，提示框溢出轴外，而 `tight_layout()`
+        # 会把所有可见 artist 的包围盒算进去，于是为了给框腾地方**压缩绘图区**
+        # ——实测轴宽 551 → 401 px（窄 27%），鼠标移开又弹回来，一闪一闪。
+        # 修法：`set_in_layout(False)` 把框排除出布局，再在 tight_layout 之后
+        # 按实际屏幕宽度决定摆在测点左边还是右边。
+        # 这是纯布局缺陷，单元测试测不到，只能在这里量真实像素。
+        from matplotlib.text import Annotation as _Ann
+        vs = win.view_section
+        vs.plot.canvas.draw()
+        ax_v = vs.plot.ax
+
+        def _axis_w():
+            return ax_v.get_window_extent().width
+
+        w_base = _axis_w()
+        bad = []
+        for i in range(target.n_points):
+            px, py = ax_v.transData.transform((target.s[i], target.z[i]))
+            ev = type("Ev", (), {})()
+            ev.x, ev.y, ev.button = float(px), float(py), None
+            ev.xdata, ev.ydata, ev.key = target.s[i], target.z[i], None
+            vs._on_motion(ev)
+            vs.plot.canvas.draw()        # draw_idle 是异步的，量之前必须同步 draw
+            w = _axis_w()
+            if abs(w - w_base) > 0.5:
+                bad.append((i + 1, round(float(target.s[i]), 2), round(w, 1)))
+        assert not bad, (
+            f"悬停测点时绘图区被挤窄：基准 {w_base:.1f} px，"
+            f"受影响 {bad}")
+        out.append(f"悬停提示框不挤窄绘图区 OK"
+                   f"（{target.n_points} 个测点轴宽恒为 {w_base:.1f} px）")
+
+        # 最右那个点的框必须翻到左侧并落在轴内。用 gid 认框——
+        # 不能用 t.xy 匹配：高亮测点本身也是 Annotation，xy 同样等于该点坐标。
+        last = target.n_points - 1
+        px, py = ax_v.transData.transform((target.s[last], target.z[last]))
+        ev = type("Ev", (), {})()
+        ev.x, ev.y, ev.button = float(px), float(py), None
+        ev.xdata, ev.ydata, ev.key = target.s[last], target.z[last], None
+        vs._on_motion(ev)
+        note = next((t for t in ax_v.texts
+                     if isinstance(t, _Ann)
+                     and str(t.get_gid() or "").startswith("hover-note:")), None)
+        assert note is not None, "最右测点上没有产生悬停提示框"
+        rnd = vs.plot.canvas.get_renderer()
+        nb, ab = note.get_window_extent(rnd), ax_v.get_window_extent(rnd)
+        assert nb.x0 >= ab.x0 - 0.5 and nb.x1 <= ab.x1 + 0.5, \
+            f"最右测点的提示框溢出轴外：框 [{nb.x0:.0f},{nb.x1:.0f}] 轴 [{ab.x0:.0f},{ab.x1:.0f}]"
+        assert note.get_position()[0] < 0, \
+            f"最右测点的框应翻到测点左侧，实际 offset={note.get_position()[0]:.0f}pt"
+        out.append(f"最右测点（起点距 {target.s[last]:.2f} m）的提示框翻到左侧且未溢出 OK")
+
+        # ⚠ 必须清掉悬停状态再往下走：`_on_click` 优先采用**当前正在吸附**
+        #   的那一个测点（用户眼睛看到的是它），留着刚才的 _hover_idx 会让
+        #   后面的点击落到错误的点上，把正常用例带崩。
+        vs._hover_idx = None
+        vs.refresh()
+        vs.plot.canvas.draw()
 
         def _click(sec, idx, button=1):
             """模拟在断面图上点击第 idx 个测点（走真实的坐标变换与吸附）。"""
@@ -680,6 +743,7 @@ try:
     # 编辑器的输入是"在图上拖测点"，跟手动调节一样必须连**真实事件**一起模拟：
     # 用 transData 把测点换算成屏幕坐标，依次喂 motion / press / motion / release。
     # 只测数据层（core/edit.py）验不出"点不中、拖不动、表格不跟着变"这类问题。
+    from core import edit as edit_mod
     win.lst_lines.setCurrentRow(0)
     win.lst_secs.setCurrentRow(0)
     win._refresh_current_views()
@@ -709,6 +773,156 @@ try:
         ed._on_press(_ev(px, py, button=1))
         ed._on_motion(_ev(tx, ty, xdata=to_s, ydata=to_z))
         ed._on_release(_ev(tx, ty))
+
+    # ---- 悬停提示框不得把绘图区挤窄（回归，编辑器一侧）----
+    # 与「断面形态」页同一处缺陷、同一套修法（见上面拾取段落）。
+    # 编辑器里提示框的锚定间距略小（rad=12/dy=16），要单独验一遍。
+    from matplotlib.text import Annotation as _Ann2
+    ed._hover_idx = None                # 先清掉上一步拖动留下的悬停框
+    ed._refresh_plot()
+    ed.plot.canvas.draw()
+    ax_e = ed.plot.ax
+
+    def _ed_axis_w():
+        return ax_e.get_window_extent().width
+
+    w_e = _ed_axis_w()                  # 干净基准：此刻图上没有提示框
+    bad_e = []
+    for k in range(ed_sec.n_points):
+        px, py = ax_e.transData.transform((ed_sec.s[k], ed_sec.z[k]))
+        ed._on_motion(_ev(px, py))
+        ed.plot.canvas.draw()
+        w = _ed_axis_w()
+        if abs(w - w_e) > 0.5:
+            bad_e.append((k + 1, round(float(ed_sec.s[k]), 2), round(w, 1)))
+    assert not bad_e, (
+        f"编辑器里悬停测点时绘图区被挤窄：基准 {w_e:.1f} px，受影响 {bad_e}")
+    out.append(f"编辑器悬停提示框不挤窄绘图区 OK"
+               f"（{ed_sec.n_points} 个测点轴宽恒为 {w_e:.1f} px）")
+
+    ke = ed_sec.n_points - 1
+    px, py = ax_e.transData.transform((ed_sec.s[ke], ed_sec.z[ke]))
+    ed._on_motion(_ev(px, py))
+    note_e = next((t for t in ax_e.texts
+                   if isinstance(t, _Ann2)
+                   and str(t.get_gid() or "").startswith("hover-note:")), None)
+    assert note_e is not None, "编辑器最右测点上没有产生悬停提示框"
+    rnd_e = ed.plot.canvas.get_renderer()
+    nb_e = note_e.get_window_extent(rnd_e)
+    ab_e = ax_e.get_window_extent(rnd_e)
+    assert nb_e.x0 >= ab_e.x0 - 0.5 and nb_e.x1 <= ab_e.x1 + 0.5, \
+        f"编辑器最右测点的提示框溢出轴外：框 [{nb_e.x0:.0f},{nb_e.x1:.0f}] " \
+        f"轴 [{ab_e.x0:.0f},{ab_e.x1:.0f}]"
+    assert note_e.get_position()[0] < 0, \
+        f"编辑器最右测点的框应翻到左侧，实际 offset={note_e.get_position()[0]:.0f}pt"
+    out.append(f"编辑器最右测点（起点距 {ed_sec.s[ke]:.2f} m）"
+               f"的提示框翻到左侧且未溢出 OK")
+    ed._hover_idx = None
+    ed._refresh_plot()
+    ed.plot.canvas.draw()
+
+    # ================= 编辑窗口跟随主界面换断面 =================
+    # 曾经的 bug：主界面换断面时，编辑窗口纹丝不动，还停在上一个断面上，
+    # 用户以为改的是 A，其实改的是 B。
+    #
+    # ⚠ 两条路径都要覆盖：同线内换行、换纵断面线。后者最容易漏——
+    #   `lst_secs` 是**屏蔽信号**重建的，`setCurrentRow(0)` 不触发
+    #   `_on_section_changed`，光在那里同步会漏掉整条"换线"的路径。
+    #
+    # ⚠ `section_editor` 是 `from PySide6.QtWidgets import QMessageBox`，
+    #   把类直接绑进了自己的命名空间。只替换 `main_window.QMessageBox`
+    #   挡不住 `follow()` 里的确认框——离屏测试会**永久阻塞**（踩过）。
+    import app.section_editor as SE
+    _saved_se_mb = SE.QMessageBox
+    SE.QMessageBox = _StubMB
+    try:
+        # ---- 同线内换断面 ----
+        win.lst_lines.setCurrentRow(0)
+        win.lst_secs.setCurrentRow(0)
+        assert ed.sec is win._current_section()
+        n_sec_line0 = win.lst_secs.count()
+        assert n_sec_line0 >= 3, "这条线的断面太少，测不出跟随"
+        win.lst_secs.setCurrentRow(2)
+        assert ed.sec is win._current_section(), \
+            f"同线内换断面时编辑窗口没跟上：" \
+            f"窗口 {ed.sec.name} / 主界面 {win._current_section().name}"
+        followed_name = ed.sec.name
+        out.append(f"编辑窗口跟随同线内换断面 OK（跟到 {followed_name}）")
+
+        # ---- 换纵断面线 ----
+        win.lst_lines.setCurrentRow(1)
+        assert ed.sec is win._current_section(), \
+            f"换纵断面线时编辑窗口没跟上：" \
+            f"窗口 {ed.sec.name} / 主界面 {win._current_section().name}"
+        assert ed.sec.name != followed_name, "换线后应停在新线的断面上"
+        out.append(f"编辑窗口跟随换线 OK（{followed_name} → {ed.sec.name}）")
+
+        # ---- 有改动时必须先问；选「否」要留在原断面，且不反复追问 ----
+        win.lst_lines.setCurrentRow(0)
+        win.lst_secs.setCurrentRow(0)
+        hold_sec = ed.sec
+        edit_mod.set_z(hold_sec, 0, hold_sec.z[0] + 1.0)
+        ed._fill_table()
+        ed._refresh_plot()
+        win._recalc()
+        assert ed.has_unsaved_changes, "改过之后 has_unsaved_changes 应为真"
+
+        _StubMB.asked.clear()
+        _StubMB.answer = _StubMB.No
+        win.lst_secs.setCurrentRow(1)
+        assert ed.sec is hold_sec, "选了「否」却还是切走了"
+        assert len(_StubMB.asked) == 1, \
+            f"有改动时应恰好问 1 次，实际 {len(_StubMB.asked)} 次"
+        out.append(f"有改动时切断面会先问一句 OK（选「否」留在 {hold_sec.name}）")
+
+        # 不能反复追问：再同步一次不该再弹
+        _StubMB.asked.clear()
+        win._sync_editor_selection(win._current_section())
+        assert not _StubMB.asked, "选「否」之后又被反复追问"
+        out.append("选「否」后不再反复追问 OK")
+
+        # ---- 选「是」要跟过去，且撤销/重做历史清空（不跨断面）----
+        ed.follow_selection = True          # 等同用户重新打开一次窗口
+        _StubMB.answer = _StubMB.Yes
+        win.lst_secs.setCurrentRow(2)
+        assert ed.sec is win._current_section(), "选「是」后应跟过去"
+        assert not ed._undo and not ed._redo, "换断面后撤销/重做历史必须清空"
+        assert not ed.has_unsaved_changes, "刚切换完不该算有未保存改动"
+        out.append("选「是」后跟随切换 + 撤销历史清空 OK（不跨断面）")
+
+        # ---- 判据是「与原状比」而非「撤销栈非空」：改完又还原就不该再拦 ----
+        win.lst_secs.setCurrentRow(0)
+        rs_sec = ed.sec
+        edit_mod.set_z(rs_sec, 0, rs_sec.z[0] + 2.0)
+        ed._fill_table()
+        ed._refresh_plot()
+        win._recalc()
+        assert ed.has_unsaved_changes
+        edit_mod.restore(rs_sec, ed._base)     # 等同点了「还原」
+        ed._fill_table()
+        ed._refresh_plot()
+        win._recalc()
+        _StubMB.asked.clear()
+        win.lst_secs.setCurrentRow(1)
+        assert not _StubMB.asked, \
+            "改完又「还原」后断面已回到原样，不该再拦着问"
+        out.append("「还原」后不再拦截 OK（判据是与原状比对，不是看撤销栈）")
+
+        # 复位到第一行，后面的拖动用例才有确定的初值
+        win.lst_secs.setCurrentRow(0)
+        assert ed.sec is win._current_section()
+        assert not ed.has_unsaved_changes
+    finally:
+        SE.QMessageBox = _saved_se_mb
+
+    # 后面的拖动用例基于 ed_sec 与「打开时的基准」，重新取一遍上下文
+    win.lst_lines.setCurrentRow(0)
+    win.lst_secs.setCurrentRow(0)
+    win._refresh_current_views()
+    ed_sec = win._current_section()
+    win.act_edit_sec.trigger()
+    assert ed.plot is not None and ed.sec is ed_sec
+    assert ed.table.rowCount() == ed_sec.n_points
 
     # ---- 默认「只改高程」：竖向拖，起点距与平面坐标都不该动 ----
     i = 1

@@ -791,6 +791,9 @@ class MainWindow(QMainWindow):
         if sec is None:
             QMessageBox.information(self, "提示", "请先在左侧选中一个横断面。")
             return
+        # 每次**主动打开**都重新开启跟随：用户上次选了"留在原断面"之后
+        # 又想让它跟着走了，再点一次菜单就该恢复正常行为。
+        self.dlg_edit.follow_selection = True
         self.dlg_edit.set_context(sec, self._current_chainage())
         self.dlg_edit.popup()
 
@@ -1076,15 +1079,31 @@ class MainWindow(QMainWindow):
         # 上面 setCurrentRow(0) 在"行号本来就已经是 0"时不发信号，
         # 那条路径不会走到 _refresh_current_views，面板就会留在上一组。
         self._refresh_manual_panels()
+        # 编辑窗口同理，也必须无条件同步：换线时 lst_secs 是**屏蔽信号**重建的，
+        # setCurrentRow(0) 不会触发 _on_section_changed，光靠那里同步会漏掉
+        # "换纵断面线"这条路径（表现为窗口还停在上一条线的断面上）。
+        self._sync_editor_selection(self._current_section())
 
     def _on_section_changed(self, row: int):
         ln = self._current_line()
         if ln is None or row < 0 or row >= len(ln.sections):
             self.param_panel.set_current(None)
+            self._sync_editor_selection(None)
             return
         sec = ln.sections[row]
         self.param_panel.set_current(sec)
         self._refresh_current_views()
+        self._sync_editor_selection(sec)
+
+    def _sync_editor_selection(self, sec):
+        """主界面换了断面 → 编辑窗口跟着换（窗口开着才管）。
+
+        ⚠ 必须在 `_refresh_current_views()` **之后**调：`_current_chainage()`
+        依赖当前行号与 `ln.chainage`，而链号可能刚被重算过。
+        """
+        if not self.dlg_edit.isVisible():
+            return
+        self.dlg_edit.follow(sec, self._current_chainage())
 
     def _refresh_current_views(self):
         ln = self._current_line()
