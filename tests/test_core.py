@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import shutil
 import sys
 import unittest
 
@@ -26,7 +27,7 @@ from core.model import ProfileData, ProfileLine, Project
 from core.reader import (_dedupe_names, blocks_to_sections, classify,
                          split_blocks)
 from core.spatial import assign_by_intersection, find_intersection, segment_intersection
-from core import exporter, params, project_io, slope
+from core import exporter, params, project_io, slope, version
 
 TOL = 1e-9
 
@@ -1931,6 +1932,46 @@ class TestManualOverrides(unittest.TestCase):
             info2 = analyze_terrain(s2, Config())
             self.assertEqual(info2.dmin_idx, ai + 1)
             self.assertEqual(len(info2.zones), 3)
+
+
+class TestVersion(unittest.TestCase):
+    """版本号与构建信息（core/version.py）。
+
+    加版本号的目的是"拿到一个 exe 能判断它是哪次提交的产物"，
+    所以**版本号与构建哈希两样都必须拿得到**，缺一样这个能力就废了。
+    """
+
+    def test_version_is_semver(self):
+        """版本号必须是 主.次.修 三段纯数字——标题栏和「关于」直接显示它。"""
+        parts = version.VERSION.split(".")
+        self.assertEqual(len(parts), 3, version.VERSION)
+        self.assertTrue(all(p.isdigit() for p in parts), version.VERSION)
+
+    def test_title_suffix_shows_version(self):
+        self.assertIn(version.VERSION, version.title_suffix())
+
+    def test_full_includes_version_and_runtime(self):
+        txt = version.full()
+        self.assertIn(version.VERSION, txt)
+        self.assertIn(version.runtime(), txt)
+        self.assertIn(version.APP_NAME, txt)
+
+    def test_git_hash_not_unknown(self):
+        """构建哈希不能是"未知"。
+
+        源码运行时靠 _build_info.py（打包烘焙）或实时查 git 二选一；
+        两者都没有才会是"未知"——那意味着 exe 看不出是哪一版，等于功能失效。
+        """
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if not (os.path.isdir(os.path.join(repo, ".git")) or shutil.which("git")):
+            self.skipTest("当前环境既不是 git 仓库也没有 git 命令")
+        self.assertNotEqual(version.git_hash(), version.UNKNOWN)
+        self.assertTrue(version.git_hash().strip())
+
+    def test_build_time_is_string(self):
+        """构建时间拿不到时返回"未知"而不是抛异常（不能因为查不到就崩界面）。"""
+        self.assertIsInstance(version.build_time(), str)
+        self.assertTrue(version.build_time().strip())
 
 
 if __name__ == "__main__":

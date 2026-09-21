@@ -10,6 +10,9 @@ dist/
 build/
 build_prev_*/
 
+# ===== 打包时生成（每次构建都变，不该进仓库） =====
+src/core/_build_info.py
+
 # ===== 运行输出 / 临时文件 =====
 output/
 _*.txt

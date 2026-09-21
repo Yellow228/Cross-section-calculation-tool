@@ -16,10 +16,20 @@
 """
 
 import os
+import sys
 
 block_cipher = None
 
 ROOT = os.path.abspath(os.getcwd())
+
+# 打包前把当前 git 提交与时间戳烘焙进 src/core/_build_info.py。
+# exe 里没有 git 可查，不烘焙的话「关于」就只能显示版本号、看不出是哪次提交的产物。
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+from tools.write_build_info import write_build_info          # noqa: E402
+
+_HASH, _TIME = write_build_info(ROOT)
+print(f"[build] 构建信息已烘焙：GIT_HASH={_HASH}  BUILD_TIME={_TIME}")
 
 a = Analysis(
     [os.path.join("src", "app", "main.py")],

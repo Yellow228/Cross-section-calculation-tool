@@ -27,6 +27,7 @@ from core.config import Config
 from core.model import Section
 from core.rating import hvec_row_counts
 from core.slope import MODE_LABELS, SLOPE_MODES, propose_slopes
+from core import version as version_mod
 
 from .widgets import make_spin
 
@@ -1598,3 +1599,45 @@ def _auto_source(sec: Section, info) -> str:
     side = "左" if k == L else "右"
     return (f"<span style='color:#888780'>（取自{side}转折点，"
             f"第 {k + 1} 个测点）</span>")
+
+
+class AboutDialog(QDialog):
+    """「关于」：版本号 + 构建信息。
+
+    信息做成**可选中 + 一键复制**，是为了用户反馈问题时能直接把"跑的是哪一版"
+    贴过来——这正是加版本号的目的。
+
+    ⚠ 只显示版本号是不够的：同一个版本号在开发过程中会被反复打包，
+    必须靠**构建哈希**才能定位到具体哪一次提交。打包后的 exe 里没有 git，
+    这个哈希是打包时烘焙进去的（见 core/version.py 的说明）。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("关于")
+        self.setModal(True)
+
+        self._text = version_mod.full()
+        lab = QLabel(self._text)
+        lab.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
+        self.btn_copy = QPushButton("复制信息")
+        self.btn_copy.setToolTip("把版本与构建信息复制到剪贴板，便于反馈问题时附上")
+        self.btn_copy.clicked.connect(self._copy)
+        btn_close = QPushButton("关闭")
+        btn_close.setDefault(True)
+        btn_close.clicked.connect(self.accept)
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(self.btn_copy)
+        row.addWidget(btn_close)
+
+        lay = QVBoxLayout(self)
+        lay.addWidget(lab)
+        lay.addLayout(row)
+        self.setMinimumWidth(360)
+
+    def _copy(self):
+        QApplication.clipboard().setText(self._text)
+        self.btn_copy.setText("已复制")

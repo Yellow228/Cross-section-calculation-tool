@@ -77,6 +77,10 @@ def _selftest(argv: list[str]) -> int:
 
         app = QApplication([])
         lines.append("QApplication OK")
+        # 版本与构建信息：自检日志里留一份，便于事后确认"跑的是哪一版"。
+        # 打包后的 exe 里没有 git，这个哈希是打包时烘焙进去的。
+        from core import version as V
+        lines.append(f"版本：{V.VERSION}　构建：{V.git_hash()}　{V.runtime()}")
         lines.append(f"frozen={getattr(sys, 'frozen', False)}  base={base}")
         plat = app.platformName()
         lines.append(f"平台插件：{plat}")
@@ -145,6 +149,15 @@ def _selftest(argv: list[str]) -> int:
         lines.append(f"计算设置面板弹出 OK（visible={win.dlg_settings.isVisible()}）")
         win.act_batch.trigger()
         lines.append(f"批量填写面板弹出 OK（visible={win.dlg_batch.isVisible()}）")
+
+        # 「关于」：版本号 + 构建哈希。打包后的 exe 靠烘焙信息才能显示哈希，
+        # 这里断言它真的拿到了（而不是"未知"）。
+        win.act_about.trigger()
+        assert win.dlg_about.isVisible(), "点「关于」没有弹出面板"
+        about = win.dlg_about._text
+        assert V.VERSION in about, "关于信息里没有版本号"
+        lines.append("关于面板 OK：" + "　".join(about.splitlines()))
+        win.dlg_about.hide()
 
         # 批量填写改版：三页签表格 + 只显示当前组 + 从表格写回参数
         d = win.dlg_batch
@@ -223,8 +236,11 @@ def _selftest(argv: list[str]) -> int:
         _saved_mb = MW.QMessageBox
         MW.QMessageBox = _StubMB
         try:
-            assert [a.text() for a in win.menuBar().actions()][-2:] == \
-                ["分区调节", "成灾水位"], "菜单栏缺少手动调节两项"
+            # 注意：不要写成"最后两项 == [分区调节, 成灾水位]"——
+            # 末尾加了「帮助」菜单后这条就失效了，按名字查更稳。
+            acts = [a.text() for a in win.menuBar().actions()]
+            assert "分区调节" in acts and "成灾水位" in acts, "菜单栏缺少手动调节两项"
+            assert "帮助" in acts, "菜单栏缺少帮助项"
             win.act_zone.trigger()
             assert win.dlg_zone.isVisible(), "点「分区调节」没有弹出面板"
             win.act_disaster.trigger()

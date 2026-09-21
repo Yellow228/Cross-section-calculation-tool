@@ -24,9 +24,10 @@ from core.exporter import export_all
 from core.model import Project, SectionResult, TerrainInfo
 from core.reader import load_folder
 from core.solver import solve_section
+from core import version as version_mod
 
-from .dialogs import (BatchDialog, DisasterDialog, SettingsDialog,
-                      SlopeDialog, ZoneDialog)
+from .dialogs import (AboutDialog, BatchDialog, DisasterDialog,
+                      SettingsDialog, SlopeDialog, ZoneDialog)
 from .param_panel import ParamPanel
 from .profile_view import ProfileView
 from .rating_view import RatingView
@@ -105,7 +106,7 @@ def default_data_dir() -> str:
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("河道断面水位–流量关系计算工具")
+        self.setWindowTitle(version_mod.APP_NAME + version_mod.title_suffix())
         self.resize(1500, 900)
 
         self.cfg = Config()
@@ -160,6 +161,7 @@ class MainWindow(QMainWindow):
         # ---- 手动调节（Q14）：两个面板都不提供数值输入，靠图上拾取 ----
         self.dlg_zone = ZoneDialog(self)
         self.dlg_disaster = DisasterDialog(self)
+        self.dlg_about = AboutDialog(self)
         for d in (self.dlg_zone, self.dlg_disaster):
             d.pickRequested.connect(self._on_manual_pick)
             d.clearRequested.connect(self._on_manual_cleared)
@@ -190,11 +192,18 @@ class MainWindow(QMainWindow):
             "手动指定成灾水位。只能在断面形态图上拾取实测测点；"
             "跟随左侧当前选中的断面。")
         act_disaster.triggered.connect(self._open_disaster_dialog)
+
+        m_help = mb.addMenu("帮助")
+        act_about = m_help.addAction("关于…")
+        act_about.setToolTip("显示程序版本与构建信息（含 git 提交哈希，可复制）")
+        act_about.triggered.connect(self._open_about_dialog)
+
         self.act_settings = act_set
         self.act_batch = act_batch
         self.act_slope = act_slope
         self.act_zone = act_zone
         self.act_disaster = act_disaster
+        self.act_about = act_about
 
         self.lst_lines = QListWidget()
         self.lst_lines.currentRowChanged.connect(self._on_line_changed)
@@ -309,7 +318,8 @@ class MainWindow(QMainWindow):
         name = (os.path.basename(self.current_path)
                 if self.current_path else "未命名工程")
         mark = " *" if self._dirty else ""
-        self.setWindowTitle(f"{name}{mark} — 河道断面水位–流量关系计算工具")
+        self.setWindowTitle(f"{name}{mark} — "
+                            f"{version_mod.APP_NAME}{version_mod.title_suffix()}")
 
     def _set_dirty(self, dirty: bool = True):
         if self._dirty != dirty:
@@ -744,6 +754,12 @@ class MainWindow(QMainWindow):
 
     def _open_disaster_dialog(self):
         self._open_manual_dialog(self.dlg_disaster)
+
+    def _open_about_dialog(self):
+        """「关于」：不依赖工程是否已载入，随时可看自己跑的是哪一版。"""
+        self.dlg_about.show()
+        self.dlg_about.raise_()
+        self.dlg_about.activateWindow()
 
     def _open_manual_dialog(self, dlg):
         """弹出手动调节面板。先喂数据再弹，否则表格是空的。"""
