@@ -27,7 +27,7 @@ from core.model import ProfileData, ProfileLine, Project
 from core.reader import (_dedupe_names, blocks_to_sections, classify,
                          split_blocks)
 from core.spatial import assign_by_intersection, find_intersection, segment_intersection
-from core import exporter, params, project_io, slope, version
+from core import edit, exporter, params, project_io, slope, version
 
 TOL = 1e-9
 
@@ -1972,6 +1972,149 @@ class TestVersion(unittest.TestCase):
         """构建时间拿不到时返回"未知"而不是抛异常（不能因为查不到就崩界面）。"""
         self.assertIsInstance(version.build_time(), str)
         self.assertTrue(version.build_time().strip())
+
+
+def _straight_sec(name="T", n=6, span=50.0, ux=1.0, uy=0.0):
+    """造一条平面上的直线断面：起点距 0..span 均分，x/y 沿 (ux,uy) 铺开。
+
+    真实数据就是这种形态（实测 31 个断面：s[0]=0、严格递增、
+    弧长÷弦长≈1.0000、偏离首末连线 ≤0.34 m），所以测例按真实形态建。
+    """
+    s = [span * i / (n - 1) for i in range(n)]
+    z = [20.0 - 2.0 * math.sin(math.pi * i / (n - 1)) for i in range(n)]
+    x = [10.0 + si * ux for si in s]
+    y = [100.0 + si * uy for si in s]
+    return Section(name=name, x=x, y=y, s=s, z=z,
+                   params=SectionParams(name=name))
+
+
+class TestSectionEdit(unittest.TestCase):
+    """横断面编辑（core/edit.py）。
+
+    这个模块的价值全在"改了一个值之后，别的东西有没有跟着对"——
+    所以每个用例都盯住**联动**，而不是盯住那个被改的数本身。
+    """
+
+    def test_recompute_xy_is_exact_on_straight_section(self):
+        """直线断面上，由 s 反推 x/y 必须与原始值逐点吻合。
+
+        这是"改起点距后同步平面坐标"这条规则成立的前提：
+        真实数据若是弯的，反推就会把点挪到错误的位置。
+        """
+        sec = _straight_sec(ux=0.6, uy=0.8)
+        ox, oy = list(sec.x), list(sec.y)
+        self.assertTrue(edit.recompute_xy(sec))
+        for i in range(sec.n_points):
+            self.assertAlmostEqual(sec.x[i], ox[i], places=9)
+            self.assertAlmostEqual(sec.y[i], oy[i], places=9)
+
+    def test_set_s_syncs_xy(self):
+        """改起点距必须连带把 x/y 挪到位。
+
+        只改 s 不改 x/y 的后果：桩号、水位交点平面坐标、成灾水位坐标导出
+        全部留在旧位置——图上是新断面，导出是旧坐标。
+        """
+        sec = _straight_sec(ux=0.6, uy=0.8, span=50.0)
+        sec.s[3] = 30.0                      # 原为 30.0 -> 先造一个已知状态
+        edit.recompute_xy(sec)
+        edit.set_s(sec, 3, 35.0)
+        self.assertAlmostEqual(sec.s[3], 35.0)
+        self.assertAlmostEqual(sec.x[3], sec.x[0] + 35.0 * 0.6, places=9)
+        self.assertAlmostEqual(sec.y[3], sec.y[0] + 35.0 * 0.8, places=9)
+
+    def test_set_s_keeps_strictly_increasing(self):
+        """起点距被夹在相邻两点之间，绝不出现相等或倒序。
+
+        一旦出现，`interp` 与分区判定会遇到 0 长度 / 负长度区间。
+        """
+        sec = _straight_sec()
+        applied = edit.set_s(sec, 2, 999.0)      # 想拖到最右端之外
+        self.assertLess(applied, sec.s[3])
+        self.assertGreater(applied, sec.s[1])
+        applied = edit.set_s(sec, 2, -999.0)     # 想拖到最左端之外
+        self.assertGreater(applied, sec.s[1])
+        for i in range(1, sec.n_points):
+            self.assertGreater(sec.s[i], sec.s[i - 1])
+
+    def test_set_z_does_not_touch_s_or_xy(self):
+        """只改高程时，起点距与平面坐标一律不动——这是最安全的编辑路径。"""
+        sec = _straight_sec()
+        s0, x0, y0 = list(sec.s), list(sec.x), list(sec.y)
+        edit.set_z(sec, 2, 12.34)
+        self.assertEqual(sec.s, s0)
+        self.assertEqual(sec.x, x0)
+        self.assertEqual(sec.y, y0)
+        self.assertAlmostEqual(sec.z[2], 12.34)
+
+    def test_insert_keeps_shape_and_shifts_manual(self):
+        """插入点不应改变断面形态，且之后的手动索引要 +1。"""
+        sec = _straight_sec()
+        sec.thalweg_manual = 3
+        sec.zone_manual = True
+        sec.zone_left = 1
+        sec.zone_right = 4
+        idx = edit.insert_point(sec, 3)
+        self.assertEqual(idx, 3)
+        self.assertEqual(sec.n_points, 7)
+        self.assertEqual(sec.thalweg_manual, 4)     # >=3 的都要 +1
+        self.assertEqual(sec.zone_left, 1)          # <3 的不动
+        self.assertEqual(sec.zone_right, 5)
+        for i in range(1, sec.n_points):
+            self.assertGreater(sec.s[i], sec.s[i - 1])   # 仍然严格递增
+        self.assertEqual([len(a) for a in (sec.x, sec.y, sec.s, sec.z)],
+                         [7, 7, 7, 7])
+
+    def test_delete_shifts_manual_and_clears_hit(self):
+        """删点：后面的索引 -1；删掉的正好是被指定的那个则清空并报出来。"""
+        sec = _straight_sec()
+        sec.thalweg_manual = 4
+        sec.disaster_idx_manual = 2
+        cleared = edit.delete_point(sec, 2)
+        self.assertEqual(cleared, ["手动成灾水位测点"])
+        self.assertIsNone(sec.disaster_idx_manual)
+        self.assertEqual(sec.thalweg_manual, 3)     # 4 -> 3
+        self.assertEqual(sec.n_points, 5)
+
+    def test_delete_refuses_below_two_points(self):
+        sec = _straight_sec(n=3)
+        self.assertEqual(edit.delete_point(sec, 1), [])
+        self.assertEqual(sec.n_points, 2)
+        self.assertEqual(edit.delete_point(sec, 0), ["至少要保留 2 个测点，不能继续删除"])
+        self.assertEqual(sec.n_points, 2, "拒绝删除时不能把点也删掉")
+
+    def test_snapshot_restore_roundtrip(self):
+        """撤销依赖快照能完整还原：几何四列 + 全部手动覆盖。"""
+        sec = _straight_sec()
+        sec.thalweg_manual = 2
+        sec.zone_manual = True
+        sec.zone_left, sec.zone_right = 1, 4
+        sec.disaster_idx_manual = 3
+        snap = edit.snapshot(sec)
+        edit.delete_point(sec, 1)
+        edit.set_z(sec, 0, -999.0)
+        edit.restore(sec, snap)
+        self.assertEqual(sec.s, snap["s"])
+        self.assertEqual(sec.z, snap["z"])
+        self.assertEqual(sec.x, snap["x"])
+        self.assertEqual(sec.y, snap["y"])
+        self.assertEqual(sec.thalweg_manual, 2)
+        self.assertTrue(sec.zone_manual)
+        self.assertEqual((sec.zone_left, sec.zone_right), (1, 4))
+        self.assertEqual(sec.disaster_idx_manual, 3)
+        self.assertEqual(sec.validate(check_params=False), [])
+
+    def test_editing_keeps_section_valid(self):
+        """改完、插完、删完，`Section.validate` 的几何校验都必须还是空的。
+
+        四列不等长是最容易制造出来的隐蔽错误：它不崩，
+        但会让后续所有按索引取值的计算错位。
+        """
+        sec = _straight_sec()
+        edit.set_z(sec, 1, 5.0)
+        edit.set_s(sec, 2, 22.0)
+        edit.insert_point(sec, 4)
+        edit.delete_point(sec, 0)
+        self.assertEqual(sec.validate(check_params=False), [])
 
 
 if __name__ == "__main__":

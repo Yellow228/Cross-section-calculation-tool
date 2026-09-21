@@ -241,6 +241,7 @@ def _selftest(argv: list[str]) -> int:
             acts = [a.text() for a in win.menuBar().actions()]
             assert "分区调节" in acts and "成灾水位" in acts, "菜单栏缺少手动调节两项"
             assert "帮助" in acts, "菜单栏缺少帮助项"
+            assert "编辑" in acts, "菜单栏缺少编辑项"
             win.act_zone.trigger()
             assert win.dlg_zone.isVisible(), "点「分区调节」没有弹出面板"
             win.act_disaster.trigger()
@@ -351,6 +352,53 @@ def _selftest(argv: list[str]) -> int:
                 lines.append(f"工程打开 OK：{len(proj2.profile_lines)} 条线 / "
                              f"{len(proj2.all_sections())} 个断面，数据逐项一致"
                              f"（含手动设定）")
+
+            # ---- 横断面编辑：改测点几何 ----
+            # 只验证联动是否成立（表格<->数据<->平面坐标），
+            # 真实的鼠标拖动吸附链路由 tools/gui_smoke.py 覆盖。
+            from PySide6.QtCore import Qt as QtE
+            from app.section_editor import COL_S, COL_Z
+
+            win.act_edit_sec.trigger()
+            dlg = win.dlg_edit
+            assert dlg.isVisible(), "点「编辑当前横断面…」没有弹出窗口"
+            sec = win._current_section()
+            assert sec is not None, "编辑窗口打开时没有当前断面"
+            n0, z0 = sec.n_points, list(sec.z)
+            assert dlg.table.rowCount() == n0, "表格行数应等于测点数"
+
+            # 1) 表格改高程 -> 写回断面
+            dlg.table.item(1, COL_Z).setText("12.34")
+            assert abs(sec.z[1] - 12.34) < 1e-9, "表格改动未写回断面"
+            lines.append(f"编辑窗口 OK：{sec.name}，{n0} 个测点；改高程已写回并重算")
+
+            # 2) 默认锁定起点距；解锁后改起点距必须连带重算 x/y
+            assert not (dlg.table.item(1, COL_S).flags() & QtE.ItemIsEditable), \
+                "默认「只改高程」时起点距列应不可编辑"
+            mid = round((sec.s[0] + sec.s[2]) * 0.5, 2)
+            mid = min(max(mid, sec.s[0] + 0.05), sec.s[2] - 0.05)
+            x1_before = sec.x[1]
+            dlg.chk_lock.setChecked(False)
+            assert dlg.table.item(1, COL_S).flags() & QtE.ItemIsEditable, \
+                "解锁后起点距列应可编辑"
+            dlg.table.item(1, COL_S).setText(f"{mid:.2f}")
+            assert abs(sec.s[1] - mid) < 1e-9, "起点距未写回断面"
+            assert abs(sec.x[1] - x1_before) > 1e-6, \
+                "改了起点距却没有同步平面坐标 x/y（导出坐标会与断面形态对不上）"
+            dlg.chk_lock.setChecked(True)
+            lines.append(f"起点距 -> 平面坐标同步 OK（第 2 点 s={mid:.2f} m）")
+
+            # 3) 插入 / 删除 / 撤销 / 还原
+            dlg.btn_insert.click()
+            assert sec.n_points == n0 + 1, "插入测点失败"
+            dlg.btn_delete.click()
+            assert sec.n_points == n0, "删除测点失败"
+            dlg.btn_undo.click()
+            assert sec.n_points == n0 + 1, "撤销未恢复被删除的测点"
+            dlg.btn_reset.click()
+            assert sec.n_points == n0, "还原未回到打开时的点数"
+            assert sec.z == z0, "还原未恢复打开时的高程"
+            lines.append("插入 / 删除 / 撤销 / 还原 OK")
         finally:
             MW.QMessageBox = _saved_mb
             win.dlg_zone.hide()
@@ -359,6 +407,7 @@ def _selftest(argv: list[str]) -> int:
         win.dlg_settings.hide()
         win.dlg_batch.hide()
         win.dlg_slope.hide()
+        win.dlg_edit.hide()
 
         # 设置切换
         win.dlg_settings.cmb_mode.setCurrentIndex(1)

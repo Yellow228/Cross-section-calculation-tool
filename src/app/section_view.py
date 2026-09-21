@@ -23,8 +23,8 @@ from core.geom import section_geom, wetted_polygons
 from core.model import Section, SectionResult, TerrainInfo
 
 from .canvas_base import (COLOR_BED, COLOR_DESIGN, COLOR_DISASTER, COLOR_PEAK,
-                          COLOR_PLUS, COLOR_THALWEG, COLOR_TURN, COLOR_WARN,
-                          COLOR_WATER, PlotPanel)
+                          COLOR_PICK, COLOR_PLUS, COLOR_THALWEG, COLOR_TURN,
+                          COLOR_WARN, COLOR_WATER, PlotPanel)
 
 #: 拾取目标 -> 中文名。键同时用作信号参数，务必与主窗口/面板保持一致。
 PICK_LABELS = {
@@ -37,7 +37,6 @@ PICK_LABELS = {
 #: 吸附半径（屏幕像素）。太小则难点中，太大则容易选错相邻测点。
 PICK_SNAP_PX = 14.0
 
-COLOR_PICK = "#378ADD"
 COLOR_AUTO_MARK = "#888780"
 
 

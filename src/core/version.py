@@ -30,7 +30,7 @@ import sys
 APP_NAME = "河道断面水位–流量关系计算工具"
 APP_NAME_SHORT = "断面计算工具"
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 UNKNOWN = "未知"
 

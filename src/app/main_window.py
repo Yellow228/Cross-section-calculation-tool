@@ -26,11 +26,13 @@ from core.reader import load_folder
 from core.solver import solve_section
 from core import version as version_mod
 
+from core.chainage import compute_chainage
 from .dialogs import (AboutDialog, BatchDialog, DisasterDialog,
                       SettingsDialog, SlopeDialog, ZoneDialog)
 from .param_panel import ParamPanel
 from .profile_view import ProfileView
 from .rating_view import RatingView
+from .section_editor import SectionEditorDialog
 from .section_view import PICK_LABELS, SectionView
 
 # 载入数据后自动填补空参数用的默认值（原「参数集 xlsx」不提供，见 Q12）。
@@ -162,6 +164,12 @@ class MainWindow(QMainWindow):
         self.dlg_zone = ZoneDialog(self)
         self.dlg_disaster = DisasterDialog(self)
         self.dlg_about = AboutDialog(self)
+
+        # ---- 横断面编辑（改测点高程 / 起点距 / 增删点）----
+        self.dlg_edit = SectionEditorDialog(self)
+        self.dlg_edit.edited.connect(self._on_section_edited)
+        self.dlg_edit.notice.connect(self._on_section_edit_notice)
+
         for d in (self.dlg_zone, self.dlg_disaster):
             d.pickRequested.connect(self._on_manual_pick)
             d.clearRequested.connect(self._on_manual_cleared)
@@ -171,6 +179,14 @@ class MainWindow(QMainWindow):
 
         mb = self.menuBar()
         self._build_file_menu(mb)
+
+        # 「编辑」管的是**断面几何本身**（测点的高程 / 起点距 / 增删点）；
+        # 「分区调节」「成灾水位」管的是叠加在几何之上的手动覆盖值，两者不同。
+        m_edit = mb.addMenu("编辑")
+        act_edit_sec = m_edit.addAction("编辑当前横断面…")
+        act_edit_sec.setToolTip("打开新窗口编辑选中横断面的测点："
+                                "左侧表格直接改数值，右侧断面图可拖动测点")
+        act_edit_sec.triggered.connect(self._open_section_editor)
 
         act_set = mb.addAction("计算设置")
         act_set.setToolTip("断面模式 / 水位步长 / 桩号原点 / 陡坡·缓坡阈值 / CSV 编码")
@@ -204,6 +220,7 @@ class MainWindow(QMainWindow):
         self.act_zone = act_zone
         self.act_disaster = act_disaster
         self.act_about = act_about
+        self.act_edit_sec = act_edit_sec
 
         self.lst_lines = QListWidget()
         self.lst_lines.currentRowChanged.connect(self._on_line_changed)
@@ -214,6 +231,9 @@ class MainWindow(QMainWindow):
 
         self.lst_secs = QListWidget()
         self.lst_secs.currentRowChanged.connect(self._on_section_changed)
+        # 双击直接开编辑窗口——改断面的入口就在断面列表上，不必去菜单栏找
+        self.lst_secs.itemDoubleClicked.connect(
+            lambda _item: self._open_section_editor())
         grp_sec = QGroupBox("横断面")
         vs = QVBoxLayout()
         vs.addWidget(self.lst_secs)
@@ -760,6 +780,83 @@ class MainWindow(QMainWindow):
         self.dlg_about.show()
         self.dlg_about.raise_()
         self.dlg_about.activateWindow()
+
+    # ---------------- 横断面编辑（改几何本身）----------------
+    def _open_section_editor(self):
+        """打开编辑窗口。先把当前断面喂进去再弹，否则表格是空的。"""
+        if self.project is None:
+            QMessageBox.information(self, "提示", "请先载入数据。")
+            return
+        sec = self._current_section()
+        if sec is None:
+            QMessageBox.information(self, "提示", "请先在左侧选中一个横断面。")
+            return
+        self.dlg_edit.set_context(sec, self._current_chainage())
+        self.dlg_edit.popup()
+
+    def _current_chainage(self):
+        ln = self._current_line()
+        row = self.lst_secs.currentRow()
+        if ln is None or not ln.chainage or row >= len(ln.chainage):
+            return None
+        return ln.chainage[row]
+
+    def _on_section_edited(self):
+        """几何被改动：重算结果、重算桩号、刷新列表标签、标脏。
+
+        四件事缺一件都是隐患：
+        * 不重算 —— 右侧三张图与导出结果都还是旧的
+        * 不重算桩号 —— `ln.chainage` 只在**载入时**算过，`_recalc()` 不管它
+        * 不刷标签 —— 左侧列表里的"桩号 xx m"不会自己更新
+        * 不标脏 —— 改完直接关程序，改动就没了
+        """
+        if self.project is None:
+            return
+        self._recalc()
+        self._recompute_chainage()
+        self._refresh_section_labels()
+        self._set_dirty(True)
+        self.dlg_edit.set_chainage(self._current_chainage())
+        self.lbl_status.setText("横断面测点已修改，已重新计算。")
+
+    def _on_section_edit_notice(self, msg: str):
+        self.lbl_status.setText(msg)
+
+    def _recompute_chainage(self):
+        """重算各断面的桩号。
+
+        ⚠ 桩号取的是深泓点的**平面坐标**，而起点距被改时 `core.edit` 会连带
+        重算 x/y——所以几何一改，桩号必须跟着重算，否则列表与导出里的
+        桩号会停留在新断面出现之前的值上。
+        """
+        for ln in self.project.profile_lines:
+            if ln.profile is None or not getattr(ln.profile, "chainage", None):
+                continue
+            infos = [self.infos[s.name] for s in ln.sections
+                     if s.name in self.infos]
+            if len(infos) != len(ln.sections):
+                continue
+            ln.chainage = compute_chainage(ln.sections, infos,
+                                           origin=self.cfg.chainage_origin)
+
+    def _refresh_section_labels(self):
+        """只改列表项文字，不动选中行。
+
+        ⚠ 不能用 `_refresh_line_list()`：它会 `setCurrentRow(0)` 把选中重置，
+        正在编辑的断面会被跳到第一个去。
+        """
+        ln = self._current_line()
+        if ln is None:
+            return
+        for row in range(self.lst_secs.count()):
+            if row >= len(ln.sections):
+                break
+            ch = (ln.chainage[row] if ln.chainage and row < len(ln.chainage)
+                  else None)
+            label = ln.sections[row].name
+            if ch is not None and ch == ch:
+                label += f"　桩号 {ch:.1f} m"
+            self.lst_secs.item(row).setText(label)
 
     def _open_manual_dialog(self, dlg):
         """弹出手动调节面板。先喂数据再弹，否则表格是空的。"""

@@ -671,6 +671,81 @@ try:
         win.dlg_zone.hide()
         win.dlg_disaster.hide()
 
+    # ================= 横断面编辑：真实鼠标拖动测点 =================
+    # 编辑器的输入是"在图上拖测点"，跟手动调节一样必须连**真实事件**一起模拟：
+    # 用 transData 把测点换算成屏幕坐标，依次喂 motion / press / motion / release。
+    # 只测数据层（core/edit.py）验不出"点不中、拖不动、表格不跟着变"这类问题。
+    win.lst_lines.setCurrentRow(0)
+    win.lst_secs.setCurrentRow(0)
+    win._refresh_current_views()
+    ed_sec = win._current_section()
+    assert ed_sec is not None
+    win.act_edit_sec.trigger()
+    ed = win.dlg_edit
+    assert ed.isVisible(), "点「编辑当前横断面…」没有弹出窗口"
+    assert ed.table.rowCount() == ed_sec.n_points, "表格行数应等于测点数"
+
+    def _pt(i):
+        px, py = ed.plot.ax.transData.transform((ed_sec.s[i], ed_sec.z[i]))
+        return float(px), float(py)
+
+    def _ev(px, py, button=None, xdata=None, ydata=None):
+        ev = type("Ev", (), {})()
+        ev.x, ev.y, ev.button = px, py, button
+        ev.xdata, ev.ydata, ev.key = xdata, ydata, None
+        return ev
+
+    def _drag(i, to_s, to_z):
+        """把第 i 个测点拖到 (to_s, to_z)。走完整的悬浮→按下→移动→松开链路。"""
+        ed.plot.canvas.draw()
+        px, py = _pt(i)
+        tx, ty = ed.plot.ax.transData.transform((to_s, to_z))
+        ed._on_motion(_ev(px, py))                    # 先悬浮，建立吸附
+        ed._on_press(_ev(px, py, button=1))
+        ed._on_motion(_ev(tx, ty, xdata=to_s, ydata=to_z))
+        ed._on_release(_ev(tx, ty))
+
+    # ---- 默认「只改高程」：竖向拖，起点距与平面坐标都不该动 ----
+    i = 1
+    z0, s0, x0, y0 = ed_sec.z[i], ed_sec.s[i], ed_sec.x[i], ed_sec.y[i]
+    _drag(i, ed_sec.s[i], z0 + 2.0)
+    assert abs(ed_sec.z[i] - (z0 + 2.0)) < 1e-6, f"拖动未改高程：{ed_sec.z[i]}"
+    assert abs(ed_sec.s[i] - s0) < 1e-12, "默认锁定时起点距不该被改动"
+    assert abs(ed_sec.x[i] - x0) < 1e-12 and abs(ed_sec.y[i] - y0) < 1e-12
+    assert ed.table.item(i, 2).text() == f"{ed_sec.z[i]:.2f}", "表格未同步新高程"
+    out.append(f"拖动改高程 OK：第 {i + 1} 点 {z0:.2f} → {ed_sec.z[i]:.2f} m，"
+               f"起点距与平面坐标未动，表格已同步")
+
+    # ---- 解锁后横向拖：起点距要改，平面坐标必须跟着重算 ----
+    ed.chk_lock.setChecked(False)
+    to_s = ed_sec.s[i] + (ed_sec.s[i + 1] - ed_sec.s[i]) * 0.4
+    _drag(i, to_s, ed_sec.z[i])
+    assert abs(ed_sec.s[i] - to_s) < 0.05, f"横向拖动未改起点距：{ed_sec.s[i]}"
+    assert abs(ed_sec.x[i] - x0) > 1e-6, "改了起点距却没有同步平面坐标 x/y"
+    assert ed.table.item(i, 1).text() == f"{ed_sec.s[i]:.2f}", "表格未同步新起点距"
+    out.append(f"横向拖动 OK：第 {i + 1} 点起点距 {s0:.2f} → {ed_sec.s[i]:.2f} m，"
+               f"x {x0:.2f} → {ed_sec.x[i]:.2f}（平面坐标已重算）")
+
+    # ---- 起点距不许被拖成倒序 ----
+    lo, hi = ed_sec.s[i - 1], ed_sec.s[i + 1]
+    _drag(i, lo - 50.0, ed_sec.z[i])           # 想往最左边拖出去
+    assert lo < ed_sec.s[i] < hi, f"起点距被拖出区间：{ed_sec.s[i]}"
+    out.append(f"起点距被夹在相邻点之间 OK（{lo:.2f} < {ed_sec.s[i]:.2f} < {hi:.2f}）")
+
+    # ---- 主窗口应已重算并标脏 ----
+    assert win._dirty, "编辑后应标记未保存"
+    assert "*" in win.windowTitle(), f"标题应带未保存标记：{win.windowTitle()}"
+    out.append(f"编辑后主窗口已重算并标脏 OK（{win.lbl_status.text()[:40]}）")
+
+    ed.grab().save(os.path.join(shots, "0f_横断面编辑窗口.png"))
+    ed.plot.canvas.fig.savefig(os.path.join(shots, "6_编辑_拖动后的断面.png"),
+                               dpi=110, bbox_inches="tight")
+    ed.btn_reset.click()
+    assert abs(ed_sec.z[i] - z0) < 1e-12 and abs(ed_sec.s[i] - s0) < 1e-12, \
+        "还原未回到打开时的状态"
+    ed.hide()
+    out.append("编辑窗口截图 + 还原 OK")
+
     out.append("\n全部通过")
 except Exception:
     failed = True

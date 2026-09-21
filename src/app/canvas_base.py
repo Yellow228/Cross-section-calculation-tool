@@ -26,6 +26,7 @@ COLOR_PEAK = "#854F0B"       # 岸顶
 COLOR_TURN = "#534AB7"       # 转折点
 COLOR_ZONE = "#B5D4F4"       # 分区底色带
 COLOR_WARN = "#E24B4A"       # 异常段
+COLOR_PICK = "#378ADD"       # 拾取 / 编辑时的高亮
 
 
 class MplCanvas(FigureCanvasQTAgg):
