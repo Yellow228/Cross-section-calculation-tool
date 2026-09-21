@@ -1973,6 +1973,55 @@ class TestVersion(unittest.TestCase):
         self.assertIsInstance(version.build_time(), str)
         self.assertTrue(version.build_time().strip())
 
+    def test_changelog_head_matches_version(self):
+        """`CHANGELOG` 的第一条必须是当前版本号。
+
+        发版最容易漏的就是这一步：进了各种功能、`VERSION` 也 bump 了，
+        却忘了往历史表里加条目——用户打开「关于」看到的还是上一版的说明。
+        """
+        self.assertTrue(version.CHANGELOG, "版本历史是空的")
+        self.assertEqual(version.CHANGELOG[0][0], version.VERSION,
+                         f"版本历史最新一条是 {version.CHANGELOG[0][0]}，"
+                         f"但 VERSION 已改成 {version.VERSION}")
+
+    def test_changelog_entries_are_wellformed(self):
+        """每条都要有版本号、日期、至少一条功能说明。
+
+        空条目比没条目更糟：用户会以为"这版没加东西"。
+        """
+        for ver, date, items in version.CHANGELOG:
+            with self.subTest(ver=ver):
+                self.assertTrue(ver.strip())
+                self.assertTrue(date.strip())
+                self.assertIsInstance(items, list)
+                self.assertTrue(items, f"{ver} 没有写任何功能说明")
+                for it in items:
+                    self.assertTrue(it.strip())
+                    self.assertFalse(it.endswith(","), f"句末多余逗号：{it}")
+
+    def test_changelog_is_newest_first(self):
+        """正式版本号必须按语义化版本**由新到旧**排列。
+
+        用户在「关于」里是自上而下读的，倒序会让人误以为"这个功能是最新版加的"。
+        """
+        vers = []
+        for v, _d, _i in version.CHANGELOG:
+            parts = v.split(".")
+            # "1.0.0 之前" 这类非正式条目没有版本号语义，跳过
+            if len(parts) == 3 and all(p.isdigit() for p in parts):
+                vers.append(v)
+        keys = [tuple(int(p) for p in v.split(".")) for v in vers]
+        self.assertEqual(keys, sorted(keys, reverse=True), vers)
+        self.assertEqual(vers[0], version.VERSION)
+
+    def test_full_includes_changelog(self):
+        """「关于」里必须能看到版本历史——这是用户查"我这版有没有某功能"的地方。"""
+        self.assertIn("版本历史", version.full())
+        for ver, _date, items in version.CHANGELOG:
+            self.assertIn(ver, version.full())
+            for it in items:
+                self.assertIn(it, version.full())
+
 
 def _straight_sec(name="T", n=6, span=50.0, ux=1.0, uy=0.0):
     """造一条平面上的直线断面：起点距 0..span 均分，x/y 沿 (ux,uy) 铺开。
@@ -2115,6 +2164,75 @@ class TestSectionEdit(unittest.TestCase):
         edit.insert_point(sec, 4)
         edit.delete_point(sec, 0)
         self.assertEqual(sec.validate(check_params=False), [])
+
+    def test_batch_apply_of_pasted_values(self):
+        """模拟"粘贴一列值进来"的批量写入，落点必须是逐点精确的。
+
+        对话框里的粘贴（`SectionEditorDialog._paste_from_clipboard`）最终就是
+        挨个调 `set_z` / `set_s`。这里在数据层把同一件事再验一遍：
+        它不依赖 Qt，所以回归时跑得最快、定位最准。
+        """
+        sec = _straight_sec(ux=0.6, uy=0.8, span=50.0)
+        n = sec.n_points
+        # 起点距列整体重排（仍在原两点之间），高程列整体抬升
+        new_s = [round(sec.s[i] * 0.9, 2) for i in range(n)]
+        new_z = [round(sec.z[i] + 1.25, 2) for i in range(n)]
+        # 起点距必须严格递增，否则会被夹——先保证输入本身合法
+        for i in range(1, n):
+            self.assertGreater(new_s[i], new_s[i - 1])
+        for i in range(n):
+            self.assertAlmostEqual(edit.set_s(sec, i, new_s[i]), new_s[i], places=9)
+            edit.set_z(sec, i, new_z[i])
+        for i in range(n):
+            self.assertAlmostEqual(sec.s[i], new_s[i], places=9)
+            self.assertAlmostEqual(sec.z[i], new_z[i], places=9)
+            # 平面坐标必须跟着起点距落到直线上
+            self.assertAlmostEqual(sec.x[i], sec.x[0] + new_s[i] * 0.6, places=9)
+            self.assertAlmostEqual(sec.y[i], sec.y[0] + new_s[i] * 0.8, places=9)
+        self.assertEqual(sec.validate(check_params=False), [])
+
+    def test_batch_paste_is_atomic_by_convention(self):
+        """批量写入的中途夹取是"就地生效"的，所以调用方必须先整批校验。
+
+        这条测试是给对话框那侧立的规矩：`set_s` 会安静地把越界值夹掉，
+        不会报错。若先写了一半才发现第 30 个值是脏数据，前面 29 个点
+        已经被改掉了——图上只表现为"形状有点怪"，极难自查。
+        所以粘贴必须**先全部解析校验、再统一写入**（见 `_paste_from_clipboard`）。
+        """
+        sec = _straight_sec()
+        s_before = list(sec.s)
+        # `set_s` 对越界值不报错，只夹取——这正是必须提前整批校验的原因
+        got = edit.set_s(sec, 2, 1e9)
+        self.assertLess(got, 1e9)
+        self.assertNotEqual(sec.s, s_before, "set_s 会就地改掉数据，不可能自动回滚")
+        # 而 NaN 会被原样挡回，不改数据
+        s_now = list(sec.s)
+        self.assertEqual(edit.set_s(sec, 2, float("nan")), sec.s[2])
+        self.assertEqual(sec.s, s_now)
+
+    def test_recompute_xy_after_span_change(self):
+        """首末两端都被改动时，走向必须用**改动前**的方向。
+
+        `set_s` 内部先在改 s 之前取好 u——顺序反了就会拿一个
+        已经不成立的走向去反推，整条断面会斜掉。
+        """
+        sec = _straight_sec(ux=1.0, uy=0.0, span=10.0)
+        x0 = sec.x[0]
+        # 把末点往外推：整条断面应仍沿 +x 方向，只是被拉长
+        edit.set_s(sec, sec.n_points - 1, 20.0)
+        self.assertAlmostEqual(sec.x[-1], x0 + 20.0, places=9)
+        for i in range(sec.n_points):
+            self.assertAlmostEqual(sec.y[i], sec.y[0], places=9)
+
+    def test_recompute_xy_on_degenerate_direction(self):
+        """首末重合（方向退化为零向量）时不能除零，也不能乱改坐标。"""
+        sec = _straight_sec()
+        sec.x[-1], sec.y[-1] = sec.x[0], sec.y[0]
+        self.assertEqual(edit.direction(sec), (0.0, 0.0))
+        ox, oy = list(sec.x), list(sec.y)
+        self.assertFalse(edit.recompute_xy(sec))
+        self.assertEqual(sec.x, ox)
+        self.assertEqual(sec.y, oy)
 
 
 if __name__ == "__main__":

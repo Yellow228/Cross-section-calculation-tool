@@ -24,6 +24,11 @@ try:
     app = QApplication(sys.argv)
     out.append("QApplication OK")
     out.append(f"界面字体：{setup_font(app) or '未找到'}")
+    # ⚠ 离屏平台的 Qt **没有字体后端**：`QFontMetrics.inFont('起')` 恒为 False，
+    #    因此截图里所有中文都是豆腐块，换任何字体族都救不回来（实测
+    #    Microsoft YaHei / SimHei / Sans Serif 三者渲染出的暗像素数完全相同）。
+    #    → 这些 PNG 只能用来验**几何与布局**（控件有没有、位置对不对、曲线对不对），
+    #      文案是否截断、是否易读，必须在真机上看。
     from PySide6.QtGui import QFontDatabase
     out.append(f"系统字体数：{len(QFontDatabase.families())}")
 
@@ -745,6 +750,94 @@ try:
         "还原未回到打开时的状态"
     ed.hide()
     out.append("编辑窗口截图 + 还原 OK")
+
+    # ================= 表格录入：默认只读 + Excel 粘贴 =================
+    # 这段先验证"默认一个字都改不了"，再验证"勾选后 Ctrl+V 真的能用"。
+    # 必须发真键盘事件：直接调 `_paste_from_clipboard()` 验不出
+    # "keyPressEvent 没接管 Ctrl+V" 这类接线问题，而那恰恰是最容易漏的一环。
+    # ⚠ 必须排在拖动段落**之后**：这里会重新 `trigger()` 打开编辑器，
+    #    而 `set_context` 会重拍 `_base`，放前面会把上面那条"还原"断言带崩。
+    # =================================================================
+    from PySide6.QtWidgets import QTableWidget as _TW
+
+    win.act_edit_sec.trigger()
+    ed2 = win.dlg_edit
+    assert ed2.isVisible()
+    p_sec = win._current_section()
+    assert p_sec is not None
+
+    def _send_ctrl_v():
+        from PySide6.QtCore import QEvent, Qt
+        from PySide6.QtGui import QKeyEvent
+        ev = QKeyEvent(QEvent.KeyPress, Qt.Key_V, Qt.ControlModifier)
+        QApplication.sendEvent(ed2.table, ev)
+        return ev.isAccepted()
+
+    # ---- 1) 默认只读：Ctrl+V 必须什么事都不发生，并且把理由说清楚 ----
+    assert ed2.table.editTriggers() == _TW.NoEditTriggers, \
+        "默认必须完全禁止进入编辑态（含 AnyKeyPressed）"
+    z_before = list(p_sec.z)
+    QApplication.clipboard().setText("1.0\t999.0")
+    ed2.table.setCurrentCell(0, 1)
+    assert _send_ctrl_v(), "Ctrl+V 未被表格接管"
+    assert p_sec.z == z_before, "只读状态下粘贴竟然改了数据"
+    assert "允许键入" in ed2.lbl_note.text(), \
+        f"只读时粘贴应提示去勾选，实际提示：{ed2.lbl_note.text()}"
+    out.append("表格默认只读 OK：Ctrl+V 不改变数据，并提示如何解锁")
+
+    # ---- 2) 勾选后：真 Ctrl+V 粘贴整块数据 ----
+    ed2.chk_type.setChecked(True)
+    assert ed2.table.editTriggers() & _TW.DoubleClicked, "解锁后应能双击编辑"
+    assert not (ed2.table.editTriggers() & _TW.AnyKeyPressed), \
+        "解锁也不能带着 AnyKeyPressed"
+    # 数值一律先定到两位小数：表格显示两位、粘贴写入的也是两位，
+    # 拿完整浮点精度去比对会假失败。
+    want_z = [round(z_before[i] + 3.0, 2) for i in range(4)]
+    body = "\n".join(f"{round(p_sec.s[i], 2):.2f}\t{want_z[i]:.2f}"
+                     for i in range(4))
+    QApplication.clipboard().setText(body)
+    ed2.table.setCurrentCell(0, 1)
+    assert _send_ctrl_v(), "解锁后 Ctrl+V 未被表格接管"
+    for i in range(4):
+        assert abs(p_sec.z[i] - want_z[i]) < 1e-9, \
+            f"第 {i + 1} 点未按粘贴值更新：{p_sec.z[i]} != {want_z[i]}"
+        assert ed2.table.item(i, 2).text() == f"{p_sec.z[i]:.2f}", \
+            "粘贴后表格未回填"
+    out.append(f"Excel 粘贴 OK：4 行 × 2 列一次性写入（第 1 点 {z_before[0]:.2f}"
+               f" → {p_sec.z[0]:.2f} m），表格已回填")
+
+    # ---- 3) 整批校验：一格不行就整批否决 ----
+    z_now = list(p_sec.z)
+    QApplication.clipboard().setText(
+        f"{p_sec.s[0]:.2f}\t88.88\n高程\t77.77\n{p_sec.s[2]:.2f}\t66.66")
+    ed2.table.setCurrentCell(0, 1)
+    _send_ctrl_v()
+    assert p_sec.z == z_now, "含非法值时应整批取消，断面却变了"
+    assert "粘贴已取消" in ed2.lbl_note.text(), \
+        f"未提示整批取消：{ed2.lbl_note.text()}"
+    out.append("粘贴整批校验 OK：含「高程」二字即整批否决，一个点都没动")
+
+    # ---- 4) 行数超出：忽略并说明，不自动加点 ----
+    n0p = p_sec.n_points
+    QApplication.clipboard().setText("\n".join(
+        f"{p_sec.s[min(i, n0p - 1)]:.2f}\t10.0" for i in range(n0p + 5)))
+    ed2.table.setCurrentCell(0, 1)
+    _send_ctrl_v()
+    assert p_sec.n_points == n0p, "行数超出时不该自动追加测点"
+    assert "忽略" in ed2.lbl_note.text(), \
+        f"未说明多余行被忽略：{ed2.lbl_note.text()}"
+    out.append(f"粘贴行数超出 OK：保持 {n0p} 个测点，明确提示忽略了 5 行")
+
+    # ---- 5) 一次撤销要把整批粘贴退回（粘贴算一个动作，不是一个一个退） ----
+    ed2.btn_undo.click()
+    assert p_sec.z == z_now, "撤销未把整批粘贴退回粘之前的状态"
+    out.append("整批粘贴一步撤销 OK")
+    ed2.grab().save(os.path.join(shots, "0g_横断面编辑_勾选允许键入.png"))
+    ed2.btn_reset.click()
+    assert p_sec.z == z_before, "还原未回到打开时的高程"
+    ed2.chk_type.setChecked(False)
+    ed2.hide()
+    out.append("解锁态截图 OK")
 
     out.append("\n全部通过")
 except Exception:

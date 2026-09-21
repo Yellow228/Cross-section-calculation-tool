@@ -2,13 +2,16 @@
 
 设计要点
 --------
-1. **非模态**（`show()` 而非 `exec()`）：调阈值时要能一边改一边看右侧三张图跟着变，
-   模态窗口会把交互挡死。
-2. 改动**立即生效**，不需要「确定」按钮——与原来的面板行为一致，
-   避免"改了没点确定所以没生效"的困惑。
-3. 两个窗口都是**单例**：反复点菜单项只是把它显示出来并置前，
-   不会越点越多、也不会丢掉已填的值。
-"""
+    1. **非模态**（`show()` 而非 `exec()`）：调阈值时要能一边改一边看右侧三张图跟着变，
+       模态窗口会把交互挡死。
+    2. 改动**立即生效**，不需要「确定」按钮——与原来的面板行为一致，
+       避免"改了没点确定所以没生效"的困惑。
+    3. 两个窗口都是**单例**：反复点菜单项只是把它显示出来并置前，
+       不会越点越多、也不会丢掉已填的值。
+
+    ⚠ 唯一例外是 `AboutDialog`：它用 `setModal(True)`，因为它只显示只读信息、
+    没有任何"边看边调"的需求，作为阻塞式的"关于"窗口反而更符合预期。
+    """
 
 from __future__ import annotations
 
@@ -20,8 +23,8 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                               QComboBox, QDialog, QFormLayout, QGridLayout,
                               QGroupBox, QHBoxLayout, QHeaderView, QLabel,
                               QMessageBox, QPushButton, QRadioButton,
-                              QTableWidget, QTableWidgetItem, QTabWidget,
-                              QVBoxLayout, QWidget)
+                              QScrollArea, QTableWidget, QTableWidgetItem,
+                              QTabWidget, QVBoxLayout, QWidget)
 
 from core.config import Config
 from core.model import Section
@@ -1602,7 +1605,7 @@ def _auto_source(sec: Section, info) -> str:
 
 
 class AboutDialog(QDialog):
-    """「关于」：版本号 + 构建信息。
+    """「关于」：版本信息 + 构建信息 + 版本历史。
 
     信息做成**可选中 + 一键复制**，是为了用户反馈问题时能直接把"跑的是哪一版"
     贴过来——这正是加版本号的目的。
@@ -1610,6 +1613,10 @@ class AboutDialog(QDialog):
     ⚠ 只显示版本号是不够的：同一个版本号在开发过程中会被反复打包，
     必须靠**构建哈希**才能定位到具体哪一次提交。打包后的 exe 里没有 git，
     这个哈希是打包时烘焙进去的（见 core/version.py 的说明）。
+
+    ⚠ 内容区必须放进 `QScrollArea`：版本历史会随发版不断增加，
+    若直接用 `QLabel` 撑布局，几个版本之后窗口会高到超出屏幕下端，
+    底部的按钮甚至会被挤出可见范围——等历史攒够了才发现就晚了。
     """
 
     def __init__(self, parent=None):
@@ -1620,9 +1627,18 @@ class AboutDialog(QDialog):
         self._text = version_mod.full()
         lab = QLabel(self._text)
         lab.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lab.setWordWrap(True)
+        # 靠左边：版本历史每行开头带「·」，居中会缩进得参差不齐
+        lab.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+
+        area = QScrollArea()
+        area.setWidget(lab)
+        area.setWidgetResizable(True)
+        area.setFrameShape(QScrollArea.NoFrame)
 
         self.btn_copy = QPushButton("复制信息")
-        self.btn_copy.setToolTip("把版本与构建信息复制到剪贴板，便于反馈问题时附上")
+        self.btn_copy.setToolTip("把版本、构建信息与版本历史复制到剪贴板，"
+                                 "便于反馈问题时附上")
         self.btn_copy.clicked.connect(self._copy)
         btn_close = QPushButton("关闭")
         btn_close.setDefault(True)
@@ -1634,9 +1650,9 @@ class AboutDialog(QDialog):
         row.addWidget(btn_close)
 
         lay = QVBoxLayout(self)
-        lay.addWidget(lab)
+        lay.addWidget(area, 1)
         lay.addLayout(row)
-        self.setMinimumWidth(360)
+        self.resize(560, 460)
 
     def _copy(self):
         QApplication.clipboard().setText(self._text)

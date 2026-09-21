@@ -156,7 +156,11 @@ def _selftest(argv: list[str]) -> int:
         assert win.dlg_about.isVisible(), "点「关于」没有弹出面板"
         about = win.dlg_about._text
         assert V.VERSION in about, "关于信息里没有版本号"
-        lines.append("关于面板 OK：" + "　".join(about.splitlines()))
+        # 版本历史会一直变长，整段拼进日志就没有可读性了——只打前 5 行 + 总行数。
+        head = about.splitlines()
+        lines.append("关于面板 OK：" + "　".join(head[:5])
+                     + f"　…（共 {len(head)} 行，含版本历史）")
+        assert "版本历史" in about, "关于里看不到版本历史"
         win.dlg_about.hide()
 
         # 批量填写改版：三页签表格 + 只显示当前组 + 从表格写回参数
@@ -357,6 +361,7 @@ def _selftest(argv: list[str]) -> int:
             # 只验证联动是否成立（表格<->数据<->平面坐标），
             # 真实的鼠标拖动吸附链路由 tools/gui_smoke.py 覆盖。
             from PySide6.QtCore import Qt as QtE
+            from PySide6.QtWidgets import QApplication as _App, QTableWidget as _TW
             from app.section_editor import COL_S, COL_Z
 
             win.act_edit_sec.trigger()
@@ -367,26 +372,72 @@ def _selftest(argv: list[str]) -> int:
             n0, z0 = sec.n_points, list(sec.z)
             assert dlg.table.rowCount() == n0, "表格行数应等于测点数"
 
-            # 1) 表格改高程 -> 写回断面
+            # 0) 默认必须真只读。只判 item 的 ItemIsEditable 不够：
+            #    默认 editTriggers 里含 AnyKeyPressed，选中后敲任意键都会改写数据。
+            assert not dlg.chk_type.isChecked(), "「允许键入 / 粘贴」应默认不勾"
+            assert dlg.table.editTriggers() == _TW.NoEditTriggers, \
+                "默认应完全不允许进入编辑态"
+            for col in (COL_S, COL_Z):
+                assert not (dlg.table.item(1, col).flags() & QtE.ItemIsEditable), \
+                    f"默认第 {col} 列应不可编辑"
+            lines.append(f"编辑窗口 OK：{sec.name}，{n0} 个测点；表格默认只读")
+
+            # 1) 解锁后双击/Enter/F2 可改——这里用程序化 setText 走同一条路径
+            dlg.chk_type.setChecked(True)
+            assert dlg.table.editTriggers() & _TW.DoubleClicked, \
+                "解锁后应允许双击进入编辑"
+            assert not (dlg.table.editTriggers() & _TW.AnyKeyPressed), \
+                "解锁后也不能带 AnyKeyPressed——那是误改数据的老毛病"
+            assert dlg.table.item(1, COL_S).flags() & QtE.ItemIsEditable, \
+                "解锁后起点距列应可编辑（不必再取消「只改高程」）"
             dlg.table.item(1, COL_Z).setText("12.34")
             assert abs(sec.z[1] - 12.34) < 1e-9, "表格改动未写回断面"
-            lines.append(f"编辑窗口 OK：{sec.name}，{n0} 个测点；改高程已写回并重算")
+            lines.append("解锁后键入 OK：两列均可改，未误开 AnyKeyPressed")
 
-            # 2) 默认锁定起点距；解锁后改起点距必须连带重算 x/y
-            assert not (dlg.table.item(1, COL_S).flags() & QtE.ItemIsEditable), \
-                "默认「只改高程」时起点距列应不可编辑"
+            # 2) 改起点距必须连带重算 x/y
             mid = round((sec.s[0] + sec.s[2]) * 0.5, 2)
             mid = min(max(mid, sec.s[0] + 0.05), sec.s[2] - 0.05)
             x1_before = sec.x[1]
-            dlg.chk_lock.setChecked(False)
-            assert dlg.table.item(1, COL_S).flags() & QtE.ItemIsEditable, \
-                "解锁后起点距列应可编辑"
             dlg.table.item(1, COL_S).setText(f"{mid:.2f}")
             assert abs(sec.s[1] - mid) < 1e-9, "起点距未写回断面"
             assert abs(sec.x[1] - x1_before) > 1e-6, \
                 "改了起点距却没有同步平面坐标 x/y（导出坐标会与断面形态对不上）"
-            dlg.chk_lock.setChecked(True)
             lines.append(f"起点距 -> 平面坐标同步 OK（第 2 点 s={mid:.2f} m）")
+
+            # 3) Excel 粘贴：整批写入
+            #    数值一律先过一遍 `%.2f`——表格里显示两位小数，粘贴进去的也是两位，
+            #    拿完整浮点精度去比对会假失败。
+            z_before = list(sec.z)
+            want_z = [round(z_before[i] + 5.0, 2) for i in range(3)]
+            _App.clipboard().setText("\n".join(
+                f"{sec.s[i]:.2f}\t{want_z[i]:.2f}" for i in range(3)))
+            dlg.table.setCurrentCell(0, COL_S)
+            n_written = dlg._paste_from_clipboard()
+            assert n_written == 6, f"粘贴了 {n_written} 个值，应为 6"
+            for i in range(3):
+                assert abs(sec.z[i] - want_z[i]) < 1e-9, \
+                    f"第 {i + 1} 点高程未按粘贴值更新：{sec.z[i]} != {want_z[i]}"
+                assert abs(sec.s[i] - round(sec.s[i], 2)) < 1e-9, \
+                    f"第 {i + 1} 点起点距未按粘贴值更新"
+            assert dlg.table.item(2, COL_Z).text() == f"{sec.z[2]:.2f}", \
+                "粘贴后表格未回填"
+            lines.append("Excel 粘贴 OK：3 行 × 2 列一次性写入并重算")
+
+            # 4) 粘贴整批校验：夹一个非数字进去，必须整批否决、数据零改动
+            z_snap = list(sec.z)
+            _App.clipboard().setText("\n".join(
+                f"{sec.s[i]:.2f}\t{'高程' if i == 1 else f'{99.0 + i:.2f}'}"
+                for i in range(3)))
+            dlg.table.setCurrentCell(0, COL_S)
+            assert dlg._paste_from_clipboard() == 0, "含无效值时应整批取消"
+            assert sec.z == z_snap, "粘贴被取消后断面不该有任何改动"
+            lines.append("粘贴整批校验 OK：含非法值时一个点都没动")
+
+            # 5) 拖动的锁定开关仍在（保留原有行为）
+            dlg.chk_type.setChecked(False)
+            dlg.chk_lock.setChecked(True)
+            dlg.btn_reset.click()
+            dlg.chk_lock.setChecked(True)
 
             # 3) 插入 / 删除 / 撤销 / 还原
             dlg.btn_insert.click()

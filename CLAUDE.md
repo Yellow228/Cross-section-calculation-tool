@@ -118,6 +118,7 @@
 | `param_panel.py` | 左侧「当前断面参数」精调面板 |
 | `canvas_base.py` | matplotlib 画布基类 |
 | `section_view.py` | 断面形态图；**图上拾取模式**（`begin_pick` / `picked` / `cancel_pick`，只吸附实测测点）；手动与自动的记号区分 |
+| `section_editor.py` | **编辑横断面**窗口（左表格 + 右可拖动断面图）；`PointTable` 处理 Excel 粘贴；表格默认只读，见 §五 #16 / #17 |
 | `rating_view.py` / `profile_view.py` | 水位–流量曲线 / 沿河纵剖面 |
 
 ### `tools/` — 辅助脚本（不是一次性脚本，都值得保留）
@@ -420,6 +421,47 @@ matplotlib 的 `NavigationToolbar2` 处于**平移/缩放**模式时，左键点
 
 **护栏**：`tests/test_core.py::TestSectionEdit` 锁住联动；`gui_smoke.py` 用真实
 `transData` 换算屏幕坐标模拟 press/motion/release，断言"横向拖动后 `x` 真的变了"。
+
+---
+
+### #16 `QTableWidget` 默认是"随便敲个键就改写数据"
+
+`QTableWidget.editTriggers` 的**默认值**是
+`DoubleClicked | EditKeyPressed | AnyKeyPressed`。那个 `AnyKeyPressed` 的含义是：
+**单元格被选中后，敲任何一个字符键立即进入编辑态并把原值替换掉**。
+
+只把 item 的 `ItemIsEditable` 标志去掉 **挡不住这个** —— 那是两个独立开关。
+要真正只读，必须显式 `setEditTriggers(QTableWidget.NoEditTriggers)`。
+
+断面编辑窗口最初就栽在这里：表格看着是"只读展示"，实际用户想按键盘配鼠标多选，
+就把某个高程改掉了；表格里只有两列数字，改没改根本看不出来。
+现在默认 `NoEditTriggers`，要在表格里录入必须显式勾选「允许键入 / 粘贴」，
+解锁时用 `DoubleClicked | EditKeyPressed`（**故意不含 `AnyKeyPressed`**）。
+
+同时删掉了打开窗口时的 `setCurrentCell(0, COL_Z)` 预选——
+"预选单元格 + AnyKeyPressed" 是同一个事故的另一种触发方式。
+
+**护栏**：`--selftest` 与 `gui_smoke.py` 都断言
+`editTriggers() == NoEditTriggers` 且解锁后 `& AnyKeyPressed == 0`。
+
+### #17 Excel 粘贴必须整批校验后再写
+
+Qt 默认的 Ctrl+V 会把**整段剪贴板塞进一个单元格**；Excel 复制出来的是
+制表符分隔文本（列间 `\t`、行间 `\n`），必须自己拆开按行列铺开
+（`dialogs.PasteTable` 与 `section_editor.PointTable` 都是这个套路）。
+
+比"怎么拆"更重要的是**什么时候写**。`edit.set_s` 对越界值是**安静地夹取**、
+对 NaN 是**安静地忽略**，都不报错。所以边解析边写会把断面改一半：
+
+- 粘 60 个数，第 30 个是脏数据 → 前 29 个点已经改了，第 30 个起没改；
+- 图上只表现为"形状有点怪"，事后无法判断哪几个点被动过。
+
+正确顺序：**先全部解析 + 校验（非数字 / NaN / inf 一律记为错误），
+一处不对就整批放弃并列出前几个出错位置，断面一个点都不动；
+全部合法才统一写入，并且只发一次 `edited`**（整批也算撤销栈里的一个动作）。
+
+**护栏**：`gui_smoke.py` 里插一段含"高程"二字的剪贴板，断言粘贴返回 0 且
+`sec.z` 逐项未变；另断言越界时行数不变、有明确"忽略 N 行"提示。
 
 ---
 
