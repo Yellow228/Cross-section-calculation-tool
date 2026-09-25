@@ -191,9 +191,42 @@ def _write_file(path: str, lines: list[dict]) -> None:
     wb.save(path)
 
 
+def _emit_project(outdir: str, project_path: str) -> None:
+    """顺带存一份**基于示范数据**的工程文件示例。
+
+    ⚠⚠ 这一份必须重新生成，绝不能沿用旧的 `samples/示例工程.dmprj`：
+    它里面装着**真实测量数据的完整坐标数组**（31 个断面的 x/y/s/z，共约 560 个
+    33xxxxx 量级的真实北坐标）、5 个真实文件名，以及 `source.dir` 上的本机绝对路径。
+    `.dmprj` 是"数据快照"，把 `data/*.xlsx` 移出仓库并不等于数据没进仓库——
+    这个文件本身就是那份数据的另一种写法。
+
+    `source.dir` 特意写成**相对路径**，避免把本机目录结构带进公开仓库。
+    """
+    import sys
+    sys.path.insert(0, os.path.join(ROOT, "src"))
+    from core import project_io                       # noqa: PLC0415
+    from core.config import Config                    # noqa: PLC0415
+    from core.reader import load_folder               # noqa: PLC0415
+
+    cfg = Config()
+    project, warns = load_folder(outdir, cfg)
+    rel = os.path.relpath(outdir, ROOT).replace(os.sep, "/")
+    project_io.save_project(project_path, project, cfg, source={
+        "dir": rel,
+        "files": sorted(n for n in os.listdir(outdir) if n.endswith(".xlsx")),
+    })
+    n = len(project.all_sections())
+    print(f"  {os.path.relpath(project_path, ROOT)}"
+          f"（{len(project.profile_lines)} 条线 / {n} 个断面，来源记为 {rel}）")
+    for w in warns:
+        print(f"      （告警）{w}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="生成可公开分发的示范断面数据")
     ap.add_argument("--outdir", default=DEFAULT_OUT)
+    ap.add_argument("--project", default=None,
+                    help="顺带生成工程文件示例（默认 samples/示例工程.dmprj）")
     a = ap.parse_args()
 
     by_file: dict[str, list[dict]] = {}
@@ -207,6 +240,10 @@ def main() -> None:
         n = sum(len(s["chainages"]) for s in specs)
         total_sec += n
         print(f"  {fname}：{len(specs)} 条纵断面线 / {n} 个横断面")
+
+    project_path = a.project or os.path.join(
+        os.path.dirname(a.outdir.rstrip(os.sep)), "示例工程.dmprj")
+    _emit_project(a.outdir, project_path)
 
     print()
     print(f"共 {len(LINES)} 条纵断面线 / {total_sec} 个横断面 -> {a.outdir}")

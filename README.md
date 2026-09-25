@@ -126,7 +126,7 @@ duanmianjisuan/
 ├── output/                 计算结果输出
 ├── samples/
 │   ├── demo_data/          **合成**示范数据（3 线 / 8 断面，可公开）
-│   └── 示例工程.dmprj      工程文件示例
+│   └── 示例工程.dmprj      工程文件示例（同样由示范数据生成）
 ├── tests/test_core.py      单元测试（153 个，纯标准库可跑）
 ├── CLAUDE.md               给 AI 助手的项目约束与踩坑清单
 │
@@ -194,7 +194,13 @@ src/app/assets/icon.png   图标预览
 
 `data/` 不在仓库里，于是新 clone 出来是空的。为了"**别人也能验证这个程序是好的**"，
 仓库里带了一份**合成**的示范数据 `samples/demo_data/`（2 个 xlsx / 3 条纵断面线 /
-8 个横断面，由 `tools/make_demo_data.py` 生成，不含任何真实测量值）。
+8 个横断面，由 `tools/make_demo_data.py` 生成，不含任何真实测量值），
+以及一份由它生成的工程文件示例 `samples/示例工程.dmprj`。
+
+⚠ `samples/` 下的东西**必须保持是合成的**：`.dmprj` 是数据快照，
+里面装的就是完整坐标数组——把 `data/*.xlsx` 移出仓库**不等于**数据没进仓库，
+那份工程文件本身就能是数据的另一种写法。重新生成：
+`python tools\make_demo_data.py`（会一并刷新 `示例工程.dmprj`）。
 
 `--selftest` 与 `tools\gui_smoke.py` 都会**自动回退**到它：
 
