@@ -322,6 +322,11 @@ class ProfileLine:
     # 算比降要用原始起点距（slope.py），显示桩号用 chainage。
     profile_dist: list[float] = field(default_factory=list)
 
+    # 一维水动力模拟配置与结果
+    hydro1d_enabled: bool = False
+    hydro1d_regime: str = "subcritical"  # 'subcritical', 'supercritical', 'mixed', 'auto'
+    hydro1d_levels: list[float] = field(default_factory=list)  # 与 sections 等长的推算水位结果
+
 
 @dataclass
 class Project:

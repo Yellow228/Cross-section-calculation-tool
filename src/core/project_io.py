@@ -215,6 +215,8 @@ def project_to_dict(project: Project, cfg: Config,
             "chainage": _flist(ln.chainage),
             "profile_dist": _flist(ln.profile_dist),
             "profile": _profile_to_dict(ln.profile),
+            "hydro1d_enabled": ln.hydro1d_enabled,
+            "hydro1d_regime": ln.hydro1d_regime,
             "sections": [_section_to_dict(s) for s in ln.sections],
         })
 
@@ -247,6 +249,11 @@ def dict_to_project(data: dict) -> tuple[Project, Config, dict]:
     lines: list[ProfileLine] = []
     for ld in data.get("profile_lines") or []:
         secs = [_section_from_dict(s) for s in (ld.get("sections") or [])]
+
+        # 兼容老文件没有该字段的情况
+        h_enabled = ld.get("hydro1d_enabled")
+        h_regime = ld.get("hydro1d_regime", "subcritical")
+
         lines.append(ProfileLine(
             name=ld.get("name", ""),
             sections=secs,
@@ -254,6 +261,8 @@ def dict_to_project(data: dict) -> tuple[Project, Config, dict]:
             order_source=ld.get("order_source", "file"),
             profile=_profile_from_dict(ld.get("profile")),
             profile_dist=_flist_back(ld.get("profile_dist")),
+            hydro1d_enabled=True if h_enabled else False,
+            hydro1d_regime=str(h_regime),
         ))
 
     # strict=False：容忍「更新版本写出、本版本不认识的字段」，

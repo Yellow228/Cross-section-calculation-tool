@@ -21,7 +21,8 @@ import os
 from typing import Optional
 
 from .config import Config
-from .model import Project, Section, SectionResult, TerrainInfo
+from .model import ProfileLine, Project, Section, SectionResult, TerrainInfo
+from .interp import interpolate_xy, find_water_edge
 
 
 def matlab_num2str(v: float) -> str:
@@ -134,6 +135,49 @@ def export_endpoint_csv(path: str, sections: list[Section],
             f.write(f'{sec.name},"{xy}",{matlab_num2str(res.design_level)}\n')
 
 
+def export_hydro1d_csv(path: str, line: ProfileLine, results: list[SectionResult], encoding: str = "utf-8-sig") -> None:
+    """一维推算水面线结果 CSV（仅对启用的线导出）。"""
+    with open(path, "w", encoding=encoding, newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["断面名称", "桩号(m)", "一维推算水位(m)", "设计流量(m3/s)", "推算流态"])
+
+        hs = getattr(line, "hydro1d_levels", [])
+        for i, sec in enumerate(line.sections):
+            c = line.chainage[i] if line.chainage and i < len(line.chainage) else sec.s[0]
+            h = hs[i] if i < len(hs) else float('nan')
+            q = sec.params.design_q
+            w.writerow([sec.name, f"{c:.3f}", f"{h:.6f}", f"{q:.3f}", line.hydro1d_regime])
+
+
+def export_hydro1d_range_csv(path: str, line: ProfileLine, cfg: Config) -> None:
+    """一维推算水面线淹没范围坐标 CSV（同淹没线坐标格式）。"""
+    with open(path, "w", encoding=cfg.csv_encoding, newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["名称", "平面坐标X", "平面坐标Y", "图标样式"])
+        hs = getattr(line, "hydro1d_levels", [])
+        for i, sec in enumerate(line.sections):
+            h = hs[i] if i < len(hs) else float('nan')
+            if h != h:
+                continue
+
+            z = sec.z
+            dmin_idx = sec.thalweg_index()
+
+            # 左岸
+            edge_l = find_water_edge(z, h, dmin_idx, "left")
+            if edge_l:
+                i1, i2 = edge_l
+                px, py = interpolate_xy(sec.x, sec.y, z, i1, i2, h)
+                w.writerow([f"{sec.name}Z", f"{px:.6f}", f"{py:.6f}", cfg.ICON_FOUND])
+
+            # 右岸
+            edge_r = find_water_edge(z, h, dmin_idx, "right")
+            if edge_r:
+                i1, i2 = edge_r
+                px, py = interpolate_xy(sec.x, sec.y, z, i1, i2, h)
+                w.writerow([f"{sec.name}Y", f"{px:.6f}", f"{py:.6f}", cfg.ICON_FOUND])
+
+
 def export_section_names_xlsx(path: str, names: list[str]) -> None:
     """断面编号参考 xlsx（对应原 xlswrite(..., 'A2')）。需要 openpyxl。"""
     try:
@@ -188,5 +232,13 @@ def export_all(project: Project,
             p6 = os.path.join(line_dir, f"{line.name}成灾水位坐标.csv")
             export_disaster_csv(p6, secs, res_list, info_list, cfg)
             written.append(p6)
+
+        # 导出开启了一维水面线推算的组
+        if getattr(line, "hydro1d_enabled", False):
+            p7 = os.path.join(line_dir, f"{line.name}一维推算水面线.csv")
+            export_hydro1d_csv(p7, line, res_list, cfg.csv_encoding)
+            p8 = os.path.join(line_dir, f"{line.name}一维推算水面线淹没范围坐标.csv")
+            export_hydro1d_range_csv(p8, line, cfg)
+            written.extend([p7, p8])
 
     return written

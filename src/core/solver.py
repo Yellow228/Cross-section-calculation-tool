@@ -10,9 +10,10 @@ from typing import Optional
 
 from .config import Config
 from .interp import find_water_edge, interp1_linear_extrap, interpolate_xy
-from .model import Section, SectionResult, TerrainInfo
+from .model import ProfileLine, Section, SectionResult, TerrainInfo
 from .rating import check_monotonic, compute_rating_curve
 from .terrain import analyze_terrain
+from .hydro1d import compute_hydro1d_profile
 
 
 def solve_section(sec: Section, cfg: Config) -> tuple[SectionResult, TerrainInfo]:
@@ -71,6 +72,14 @@ def solve_section(sec: Section, cfg: Config) -> tuple[SectionResult, TerrainInfo
         sec, cfg, z, result.design_level, info.dmin_idx, "right", info.ymax_idx)
 
     return result, info
+
+
+def solve_profile_line(line: ProfileLine, results: dict) -> None:
+    """求解整个纵断面线的一维水动力推算。"""
+    if line.hydro1d_enabled:
+        line.hydro1d_levels = compute_hydro1d_profile(line, results)
+    else:
+        line.hydro1d_levels = [float('nan')] * len(line.sections)
 
 
 def _edge_point(sec: Section, cfg: Config, z: list[float], H: float,
