@@ -75,6 +75,9 @@ Q1~Q15 的用户决策记录、以及重写中自引入缺陷（M1~M5）的复�
 :: 单元测试（不需要任何第三方依赖，个数以实际输出为准）
 .venv\Scripts\python.exe tests\test_core.py
 
+:: 依赖自检
+.venv\Scripts\python.exe tools\verify_env.py
+
 :: 命令行批处理（不开界面，跑真实数据）
 .venv\Scripts\python.exe tools\run_batch.py
 
@@ -93,9 +96,17 @@ Q1~Q15 的用户决策记录、以及重写中自引入缺陷（M1~M5）的复�
 :: 打包 → 产物在 dist\断面计算工具\
 .venv\Scripts\python.exe -m PyInstaller build_exe.spec --noconfirm
 
-:: 打包后必须跑这个：启动 exe 并等它跑完自检
+:: 打包后必须跑这两个：exe 自检 + 图标核验
 .venv\Scripts\python.exe tools\check_exe.py
+.venv\Scripts\python.exe tools\check_icon.py
 ```
+
+**改完至少跑三层**：单测（纯标准库、不受界面影响）→ 界面冒烟（模拟真实点击与 Excel 粘贴）
+→ 打包后自检（在 frozen 环境里把整条链路再跑一遍）。
+
+- 单测**不读任何数据文件**（用代码内造的 fixture）
+- 冒烟与自检**需要数据**，但 `data\` 缺失时会自动回退到 `samples\demo_data\`，
+  所以干净 clone 也能跑通；回退时日志里会写「用的是**示范数据**」，不会让人误判
 
 运行 Python 时若中文输出乱码，先设 `$env:PYTHONIOENCODING = "utf-8"`。
 
@@ -142,6 +153,8 @@ Q1~Q15 的用户决策记录、以及重写中自引入缺陷（M1~M5）的复�
 `check_csv_encoding` CSV 编码核验 · `check_icon` 图标核验 · `font_check` 字体核验 ·
 `check_spatial` 分组核验 · `check_slope` 比降推算核对 ·
 `check_overrides` 手动覆盖核对（含行数警告的端到端核验）· `verify_env` 依赖核验 ·
+`check_project_io` 工程文件逐字段核对（设置 24 项 / 断面参数 31×7 值，
+并验证用恢复的设置重算结果一致 → `output\工程文件核对报告.txt`）·
 `peek_xlsx`/`scan_sections` 数据窥探 · `make_icon` 生成图标 · `wheel_list` 生成离线依赖清单 ·
 `fetch_wheels` 按清单取回离线依赖 · **`make_demo_data` 生成可公开的合成示范数据**
 （`samples/demo_data/`，`data/` 缺失时自检与冒烟靠它兜底）
@@ -151,6 +164,78 @@ Q1~Q15 的用户决策记录、以及重写中自引入缺陷（M1~M5）的复�
 > （见 `make_demo_data.SHAPE` 的注释），算法一改它可能就不再产生转折点，
 > 而这类退化**不会让测试报错**（3 区断言来自手动覆盖，与数据形状无关）。
 > 验证：`--selftest samples\demo_data` 应仍然 PASSED。
+
+### 顶层文件与目录
+
+只列上面模块表覆盖不到的（模块职责不重复；README 的「目录结构」已删，以本节为准）：
+
+```
+requirements.txt            依赖清单（版本钉死）
+wheels_urls.txt / _report   21 个离线 wheel 的下载直链与明细
+build_exe.spec              PyInstaller 打包配置
+README.md / CLAUDE.md / DESIGN.md   三份文档，分工见 §八
+output/                     运行输出总目录（计算结果、各类核对报告、预览图）
+docs/images/                README 配图（由 gui_smoke 用示范数据生成）
+samples/demo_data/          合成示范数据（见 §六）
+samples/demo_project.dmprj  由它生成的工程文件示例
+tests/test_core.py          单元测试
+src/app/assets/             icon.ico（多尺寸）+ icon.png
+original_matlab/            原 MATLAB 脚本，算法对照用
+```
+
+⚠ **三个目录刻意不入库**：`wheels/`（约 108 MB 离线依赖，用 `tools/fetch_wheels.py` 取回）、
+`data/`（真实测量数据）、`.workbuddy/`（本地工作记录，含本机路径与用户名）。
+clone 出来的仓库里拷这些路径会找不到——这是预期，不是坏了。
+
+### 程序图标
+
+图标是**画出来的**（不是生成式图片），保证 16×16 到 256×256 都清晰：
+深蓝圆角底 + 白色河道横断面 + 浅蓝水面，外圈一圈浅黄（`#FFFF66`）描边。
+
+```bat
+.venv\Scripts\python.exe tools\make_icon.py     :: 重新生成（默认变体 c）
+.venv\Scripts\python.exe tools\check_icon.py    :: 核验
+```
+
+`make_icon.py` 内置多套配色，`--variant` 切换；**当前采用 `c`「金边」，也是默认值**：
+
+| 变体 | 样子 |
+|---|---|
+| `c` | **金边**：沿蓝底内缘一圈浅黄 ← 采用中 |
+| `none` | 不含任何浅黄（改动前的原样，留作对比基线） |
+| `a` | 暖阳：左上角一个浅黄太阳，断面略往右下让位 |
+| `b` | 金水：水面附近一条浅黄高光带 |
+
+比选用 `--variant all --outdir 某目录`，四种一起渲染到指定目录，**不动成品**。
+
+改形状编辑脚本顶部常量：`TERRAIN`（断面，归一化坐标）、`WATER_Y`（水位线）、
+`PAD` / `RADIUS`（圆角）、`RING_W`（金边厚度）——**四种变体共用同一份几何**，只改一处。
+`.ico`（16/24/32/48/64/128/256 七档）与预览图会一起更新。
+
+⚠ 三条：
+1. 改完**务必验一条**——`none` 变体渲染出来应与改动前的图**逐像素一致**，
+   确保重构没顺手伤到原设计。
+2. 换图标后 **exe 里的图标不会自动更新，必须重新打包**才生效。
+3. `check_icon.py` 除了看 `.ico` 七档是否齐全，还会**比对 exe 里嵌的是不是当前这张图**。
+   后一条是必需的：新旧 `.ico` 的档数通常一样（都是 7 档），只看档数会报"正常"
+   而实际嵌的是旧图——这是真踩到过的假绿灯。
+
+### 版本、构建信息与签名
+
+- **版本号**：`src/core/version.py` 的 `VERSION`，手工维护，遵循语义化
+  （修 bug → 修订号 +1，新增功能 → 次版本 +1，不兼容 → 主版本 +1）。
+- **版本历史**：同文件的 `CHANGELOG`：`(版本号, 日期, 功能列表)`，最新在最前。
+  ⚠ 只写**用户能感知到**的东西（内部重构、测试补充不进这张表）。
+  **发版时表头必须等于 `VERSION`**，由 `tests/test_core.py::TestVersion` 挡住漏写。
+- **构建哈希**：打包那一刻的 git 提交短哈希，由 `build_exe.spec` 调
+  `tools/write_build_info.py` 烘焙进 `src/core/_build_info.py`。
+  ⚠ exe 里既没有 git 也没有 `.git`，不烘焙就**看不出这个 exe 是哪次提交的产物**——
+  这正是加版本号要解决的问题。该文件被 `.gitignore` 排除（每次构建都变）；
+  源码运行且没有它时，退而实时调 `git` 查一次，都拿不到才显示"未知"。
+- **签名**：`version.py` 的 `SIGNATURE`，显示在「关于」最下方，随「复制信息」一起带走。
+  与版本号同源（放 `version.py` 而非界面代码），改签名只需改一处；
+  `--selftest` 会断言它存在**且位于最后一行**，防止重构时被删掉或挪位。
+- `--selftest` 日志里也会记一行版本与构建，便于事后确认"当时跑的是哪一版"。
 
 ---
 
