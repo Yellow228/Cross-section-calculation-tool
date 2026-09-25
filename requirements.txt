@@ -1,15 +1,20 @@
 # 河道断面水位-流量关系计算工具 —— 完整依赖清单（离线安装用）
 #
 # 目标平台: Windows x86_64, Python 3.13（工作区 .venv）
-# wheel 下载目录: E:\VSCODE\duanmianjisuan\wheels
-# 下载 URL 清单:  wheels_urls.txt  （21 个 URL，逐行一个，直接用浏览器或下载工具取）
+# wheel 下载目录: wheels\  （**不入库**）
+# 下载 URL 清单:  wheels_urls.txt（21 个 URL，逐行一个）
 # 总体积:        约 108 MB（已剔除 PySide6-Addons 的 160 MB）
 # 详细清单:       wheels_report.txt（包名 / 版本 / 文件名 / URL）
 #
-# 全部 wheel 下载完毕后，用这条命令离线安装（不联网、不碰全局）：
-#   E:\VSCODE\duanmianjisuan\.venv\Scripts\python.exe -m pip install ^
-#     --no-index --find-links "E:\VSCODE\duanmianjisuan\wheels" ^
-#     -r "E:\VSCODE\duanmianjisuan\requirements.txt"
+# ⚠ wheels\ 不进仓库（约 108 MB，会把 .git 撑到 100 MB 量级）。
+#   用这个脚本按清单取回，可重复跑、已下好的会跳过：
+#     .venv\Scripts\python.exe tools\fetch_wheels.py
+#
+# 全部 wheel 就位后，用这条命令离线安装（不联网、不碰全局）。
+# 下面一律用**相对路径**，请在仓库根目录执行：
+#   .venv\Scripts\python.exe -m pip install ^
+#     --no-index --find-links wheels ^
+#     -r requirements.txt
 
 # ---------- 数值计算（core 层不用，但 matplotlib 依赖）----------
 numpy==2.5.3

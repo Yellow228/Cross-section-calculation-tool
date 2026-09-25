@@ -43,4 +43,4 @@ pyinstaller-hooks-contrib 2026.7        pyinstaller_hooks_contrib-2026.7-py3-non
 setuptools                84.0.0        setuptools-84.0.0-py3-none-any.whl
                                         https://files.pythonhosted.org/packages/95/9c/c510029fc6ef33a6275cd2c5d3cecd6613dfd6aa401d57c54f1c18852ccf/setuptools-84.0.0-py3-none-any.whl
 
-共 21 个 wheel -> 全部下载到 E:\VSCODE\duanmianjisuan\wheels
+共 21 个 wheel -> 用 tools/fetch_wheels.py 下载到 wheels/（该目录不入库）

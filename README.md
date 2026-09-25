@@ -117,13 +117,12 @@ v1.2.2　（2026-09-25）
 
 ```
 duanmianjisuan/
-├── requirements.txt        依赖清单（已全部离线安装到 .venv）
-├── wheels/                 离线 wheel（21 个，约 108 MB）
-├── wheels_urls.txt         各 wheel 的下载直链
-├── 项目方案.md             完整设计方案与决策记录
+├── requirements.txt        依赖清单
+├── wheels_urls.txt         各 wheel 的下载直链（21 个）
+├── wheels_report.txt       下载清单明细（包名 / 版本 / 文件名 / URL）
+├── 项目方案.md             设计与决策档案（当初为什么这么定）
 ├── build_exe.spec          PyInstaller 打包配置
 │
-├── data/                   输入 xlsx 放这里
 ├── output/                 计算结果输出
 ├── tests/test_core.py      单元测试（153 个，纯标准库可跑）
 ├── CLAUDE.md               给 AI 助手的项目约束与踩坑清单
@@ -172,10 +171,27 @@ duanmianjisuan/
     ├── font_check.py       真实平台下核验界面中文字体
     ├── make_icon.py        生成程序图标
     ├── check_icon.py       核验 .ico 尺寸与 exe 内嵌图标
-    └── wheel_list.py       生成 wheel 下载清单
+    ├── wheel_list.py       生成 wheel 下载清单
+    └── fetch_wheels.py     按清单把 wheel 下载回 wheels/
 
 src/app/assets/icon.ico   程序图标（多尺寸）
 src/app/assets/icon.png   图标预览
+```
+
+### 三个**不入库**的目录
+
+| 目录 | 为什么不入库 | 怎么获得 |
+|---|---|---|
+| `wheels/` | 21 个 wheel 约 **108 MB**，占仓库体积 99%，会把 `.git` 撑到 100 MB 量级 | `python tools\fetch_wheels.py`（按 `wheels_urls.txt` 下载，可重复跑，已下好的跳过） |
+| `data/` | **真实测量数据**，文件名含具体地名，不适合随仓库分发 | 使用者自备，把你的断面 xlsx 放进 `data\` |
+| `.workbuddy/` | 本地工作记录：含本机绝对路径、用户名，以及面向内部的过程笔记 | 不需要，它是工具自动维护的本地资料库（**别删**） |
+
+⚠ 由此带来一个后果：**clone 下来直接跑 `--selftest` 会失败**，因为自检要
+「载入数据 → 渲染三图 → 导出」整条链路，没有数据无法进行。它不会静默卡住，
+而是给出明确提示并让你指定数据目录：
+
+```bat
+.venv\Scripts\python.exe src\app\main.py --selftest 你的数据目录
 ```
 
 ## 程序图标
