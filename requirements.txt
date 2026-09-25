@@ -4,7 +4,7 @@
 # wheel 下载目录: wheels\  （**不入库**）
 # 下载 URL 清单:  wheels_urls.txt（21 个 URL，逐行一个）
 # 总体积:        约 108 MB（已剔除 PySide6-Addons 的 160 MB）
-# 详细清单:       wheels_report.txt（包名 / 版本 / 文件名 / URL）
+# 详细清单:       见 wheels_urls.txt（21 行，每行一个 URL，文件名在末尾）
 #
 # ⚠ wheels\ 不进仓库（约 108 MB，会把 .git 撑到 100 MB 量级）。
 #   用这个脚本按清单取回，可重复跑、已下好的会跳过：

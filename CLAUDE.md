@@ -171,7 +171,7 @@ Q1~Q15 的用户决策记录、以及重写中自引入缺陷（M1~M5）的复�
 
 ```
 requirements.txt            依赖清单（版本钉死）
-wheels_urls.txt / _report   21 个离线 wheel 的下载直链与明细
+wheels_urls.txt             21 个离线 wheel 的下载直链（fetch_wheels.py 读它）
 build_exe.spec              PyInstaller 打包配置
 README.md / CLAUDE.md / DESIGN.md   三份文档，分工见 §八
 output/                     运行输出总目录（计算结果、各类核对报告、预览图）

@@ -1,6 +1,11 @@
-"""生成 wheel 下载清单（文件名 + URL），结果直接写入 wheels_urls.txt / wheels_report.txt。
+"""生成 wheel 下载清单（文件名 + URL），结果写入 `wheels_urls.txt`。
 
-不做控制台打印，避免 Windows 控制台编码问题。
+不做控制台打印，避免 Windows 控制台编码问题；出错信息写 `_wheelgen.log`。
+
+**只产出 `wheels_urls.txt`**（`tools/fetch_wheels.py` 直接读它）。
+原先还会产出 `wheels_report.txt`——那只是给人看的明细，包名/版本在
+`requirements.txt` 里、文件名在 URL 末尾，信息完全重复，且它里面会写进
+本机绝对路径。已删，别再把它加回来。
 """
 
 from __future__ import annotations
@@ -79,19 +84,18 @@ def main() -> None:
             continue
         rows.append((pkg, v, f["filename"], f["url"]))
 
-    lines = [f"{'包名':<26}{'版本':<14}{'文件名'}"]
-    lines.append("-" * 120)
-    urls = []
-    for pkg, v, fn, u in rows:
-        lines.append(f"{pkg:<26}{v:<14}{fn}")
-        if u:
-            lines.append(f"{'':<40}{u}")
-            urls.append(u)
-    lines.append("")
-    lines.append(f"共 {len(urls)} 个 wheel -> 全部下载到 {os.path.join(ROOT, 'wheels')}")
+    urls = [u for _pkg, _v, _fn, u in rows if u]
 
-    with open(os.path.join(ROOT, "wheels_report.txt"), "w", encoding="utf-8") as fp:
-        fp.write("\n".join(lines))
+    # ⚠ 不完整的清单**绝不写出**：PyPI 抽风时若照常覆盖，
+    #   仓库里那份好清单会变成残缺版，下次 fetch_wheels.py 就静默漏装包。
+    #   宁可报错、保持原文件不动（错误会进 _wheelgen.log）。
+    if len(urls) != len(PKGS):
+        missing = "、".join(p for p, _v, _f, u in rows if not u)
+        raise RuntimeError(
+            f"只拿到 {len(urls)}/{len(PKGS)} 个 wheel 的 URL，"
+            f"未写出清单（原 wheels_urls.txt 保持不动）。缺的包：{missing}"
+        )
+
     with open(os.path.join(ROOT, "wheels_urls.txt"), "w", encoding="utf-8") as fp:
         fp.write("\n".join(urls) + "\n")
 
