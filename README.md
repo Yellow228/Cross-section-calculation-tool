@@ -124,6 +124,9 @@ duanmianjisuan/
 ├── build_exe.spec          PyInstaller 打包配置
 │
 ├── output/                 计算结果输出
+├── samples/
+│   ├── demo_data/          **合成**示范数据（3 线 / 8 断面，可公开）
+│   └── 示例工程.dmprj      工程文件示例
 ├── tests/test_core.py      单元测试（153 个，纯标准库可跑）
 ├── CLAUDE.md               给 AI 助手的项目约束与踩坑清单
 │
@@ -172,7 +175,8 @@ duanmianjisuan/
     ├── make_icon.py        生成程序图标
     ├── check_icon.py       核验 .ico 尺寸与 exe 内嵌图标
     ├── wheel_list.py       生成 wheel 下载清单
-    └── fetch_wheels.py     按清单把 wheel 下载回 wheels/
+    ├── fetch_wheels.py     按清单把 wheel 下载回 wheels/
+    └── make_demo_data.py   生成 samples/demo_data 那份合成示范数据
 
 src/app/assets/icon.ico   程序图标（多尺寸）
 src/app/assets/icon.png   图标预览
@@ -186,13 +190,25 @@ src/app/assets/icon.png   图标预览
 | `data/` | **真实测量数据**，文件名含具体地名，不适合随仓库分发 | 使用者自备，把你的断面 xlsx 放进 `data\` |
 | `.workbuddy/` | 本地工作记录：含本机绝对路径、用户名，以及面向内部的过程笔记 | 不需要，它是工具自动维护的本地资料库（**别删**） |
 
-⚠ 由此带来一个后果：**clone 下来直接跑 `--selftest` 会失败**，因为自检要
-「载入数据 → 渲染三图 → 导出」整条链路，没有数据无法进行。它不会静默卡住，
-而是给出明确提示并让你指定数据目录：
+### 没有数据也能验证程序
+
+`data/` 不在仓库里，于是新 clone 出来是空的。为了"**别人也能验证这个程序是好的**"，
+仓库里带了一份**合成**的示范数据 `samples/demo_data/`（2 个 xlsx / 3 条纵断面线 /
+8 个横断面，由 `tools/make_demo_data.py` 生成，不含任何真实测量值）。
+
+`--selftest` 与 `tools\gui_smoke.py` 都会**自动回退**到它：
 
 ```bat
+:: 不指定数据目录 —— 有 data\ 用 data\，没有就用 samples\demo_data\
+.venv\Scripts\python.exe src\app\main.py --selftest
+
+:: 想用别的数据，指定目录即可
 .venv\Scripts\python.exe src\app\main.py --selftest 你的数据目录
+.venv\Scripts\python.exe tools\gui_smoke.py 你的数据目录
 ```
+
+回退时会明确写在日志里（「用的是**示范数据**」），不会让你误以为跑的是真实数据。
+两个目录都没有才会报错，并提示你该怎么指定。
 
 ## 程序图标
 
@@ -580,14 +596,18 @@ CSV 默认按 **UTF-8 带 BOM**（`utf-8-sig`）写出。
 .venv\Scripts\python.exe tools\verify_env.py
 
 :: 界面冒烟测试（离屏渲染三张图到 output\_preview）
+:: 数据目录可省略：有 data\ 用它，没有就回退 samples\demo_data\
 .venv\Scripts\python.exe tools\gui_smoke.py
 
 :: 打包后 exe 的自检（含全部链路，含手动设定往返）
 .venv\Scripts\python.exe tools\check_exe.py
 ```
 
-三层都要绿：单测（纯标准库，不受界面影响）、界面冒烟（真实数据、模拟点击与 Excel 粘贴）、
+三层都要绿：单测（纯标准库，不受界面影响）、界面冒烟（模拟真实点击与 Excel 粘贴）、
 打包后自检（在 frozen 环境里把整条链路再跑一遍）。
+
+单测**不读任何数据文件**（用的是代码内造的 fixture）；界面冒烟与自检需要数据，
+但会在 `data\` 缺失时自动回退到 `samples\demo_data\`，所以干净 clone 也能跑通。
 
 ## 打包 exe
 

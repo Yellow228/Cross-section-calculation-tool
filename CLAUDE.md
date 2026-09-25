@@ -87,6 +87,9 @@ Q1~Q15 的用户决策记录、以及重写中自引入缺陷（M1~M5）的复�
 :: 源码自检（离屏跑完整流程，退出码 0/1）
 .venv\Scripts\python.exe src\app\main.py --selftest
 
+:: 以上两个都可接一个数据目录参数；不接的话 data\ 缺失时会回退 samples\demo_data\
+.venv\Scripts\python.exe src\app\main.py --selftest samples\demo_data
+
 :: 打包 → 产物在 dist\断面计算工具\
 .venv\Scripts\python.exe -m PyInstaller build_exe.spec --noconfirm
 
@@ -139,7 +142,15 @@ Q1~Q15 的用户决策记录、以及重写中自引入缺陷（M1~M5）的复�
 `check_csv_encoding` CSV 编码核验 · `check_icon` 图标核验 · `font_check` 字体核验 ·
 `check_spatial` 分组核验 · `check_slope` 比降推算核对 ·
 `check_overrides` 手动覆盖核对（含行数警告的端到端核验）· `verify_env` 依赖核验 ·
-`peek_xlsx`/`scan_sections` 数据窥探 · `make_icon` 生成图标 · `wheel_list` 生成离线依赖清单
+`peek_xlsx`/`scan_sections` 数据窥探 · `make_icon` 生成图标 · `wheel_list` 生成离线依赖清单 ·
+`fetch_wheels` 按清单取回离线依赖 · **`make_demo_data` 生成可公开的合成示范数据**
+（`samples/demo_data/`，`data/` 缺失时自检与冒烟靠它兜底）
+
+> ⚠ 改了**转折点判定 / 分区 / 分组**相关逻辑后，除了跑真实数据，
+> 也要跑一遍 demo_data：那份数据的断面形状是按转折点算法**反推**出来的
+> （见 `make_demo_data.SHAPE` 的注释），算法一改它可能就不再产生转折点，
+> 而这类退化**不会让测试报错**（3 区断言来自手动覆盖，与数据形状无关）。
+> 验证：`--selftest samples\demo_data` 应仍然 PASSED。
 
 ---
 
@@ -565,6 +576,14 @@ Qt 默认的 Ctrl+V 会把**整段剪贴板塞进一个单元格**；Excel 复�
 下文描述的是**开发机上那份**数据的情况。换上别的数据时，
 这里的分组结果与分区结论都会变，`--selftest` 也可能因数据不符合预期而失败。
 
+**仓库里另有一份可公开的合成数据 `samples/demo_data/`**（3 条纵断面线 / 8 个横断面，
+由 `tools/make_demo_data.py` 生成）。`--selftest` 与 `tools/gui_smoke.py` 在
+`data/` 缺失时自动回退到它——**所以本节的结论只适用于 `data/` 那份真实数据**，
+拿 demo_data 跑出来的条数、分区数都不一样，别照着本节去核对演示结果。
+
+改数据分组 / 分区相关逻辑时，**两份都要跑**：真实数据验证不炸，
+demo_data 保证干净环境下也能验证。
+
 `data/` 下 5 个 xlsx → **8 条纵断面线 / 31 个横断面**：
 
 ```
@@ -615,5 +634,6 @@ SJC4(3) ypc6(3) xlc7-段1(3) xlc7-段2(4)
 
 ⚠ **有三个目录刻意不入库**：`wheels/`（108 MB 离线依赖，用
 `tools/fetch_wheels.py` 取回）、`data/`（真实测量数据）、`.workbuddy/`（本地记录）。
-所以在 clone 出来的仓库里：拷这些路径会找不到，且**直接跑 `--selftest` 会失败**
-（它需要数据）——这是预期行为，不是坏了。
+所以在 clone 出来的仓库里拷这些路径会找不到。
+但**自检与冒烟测试仍然能跑**——`data/` 缺失时会自动回退到
+`samples/demo_data/`（`tools/make_demo_data.py` 生成的合成数据，可公开）。

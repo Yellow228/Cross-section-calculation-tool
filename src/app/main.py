@@ -122,6 +122,14 @@ def _selftest(argv: list[str]) -> int:
         base = os.path.dirname(os.path.dirname(_HERE))
 
     data_dir = argv[0] if argv else os.path.join(base, "data")
+    used_fallback = False
+    if not os.path.isdir(data_dir):
+        # 真实数据不随仓库分发，所以新 clone 出来是没有 data/ 的。
+        # 退回仓库里那份**合成**示范数据（samples/demo_data，可公开），
+        # 否则自检对每个新 clone 的人都跑不起来。
+        demo = os.path.join(base, "samples", "demo_data")
+        if os.path.isdir(demo):
+            data_dir, used_fallback = demo, True
     log_path = os.path.join(os.getcwd(), "_selftest.txt")
     lines: list[str] = []
 
@@ -167,18 +175,21 @@ def _selftest(argv: list[str]) -> int:
         if os.path.isdir(data_dir):
             win.data_dir = data_dir
             win._load()
+            if used_fallback:
+                lines.append("用的是**示范数据**（data/ 不存在，已回退）："
+                             + data_dir)
             lines.append("载入数据 OK：" + win.lbl_status.text())
         else:
             lines.append(f"数据目录不存在（跳过载入）：{data_dir}")
 
         # 自检验的就是「载入数据 → 渲染三图 → 导出」整条链路，没数据就无从进行。
-        # ⚠ 数据目录**不在仓库里**（真实测量数据不公开），所以第一次 clone
-        #   下来直接跑自检必然走到这里——给他一句能照做的话，
+        # ⚠ 真实数据**不在仓库里**，所以第一次 clone 会走到上面的"回退示范数据"；
+        #   连示范数据都没有（目录被删）才会到这里——给他一句能照做的话，
         #   而不是让它掉进后面某个 AttributeError 里。
         assert win.project is not None, (
             f"自检需要断面数据，但 {data_dir} 下没有可用的 xlsx。\n"
-            f"数据不随仓库分发（真实测量数据），请把你的断面 xlsx 放进 data\\，\n"
-            f"或用参数指定目录：python src\\app\\main.py --selftest 你的数据目录"
+            f"请把你的断面 xlsx 放进 data\\，或用参数指定目录：\n"
+            f"    python src\\app\\main.py --selftest 你的数据目录"
         )
 
         # 逐个切换，确保每个视图都能画出来

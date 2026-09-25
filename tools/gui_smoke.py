@@ -1,10 +1,31 @@
-"""离屏冒烟测试：构造主窗口、载入真实数据、跑三个视图，并导出 PNG 供肉眼检查。"""
+"""离屏冒烟测试：构造主窗口、载入数据、跑三个视图，并导出 PNG 供肉眼检查。
+
+数据目录：可用第一个参数指定；不指定时按 `data/` → `samples/demo_data/` 回退。
+真实测量数据不随仓库分发，所以新 clone 出来的仓库靠那份**合成**示范数据也能跑。
+"""
 
 import os
 import sys
 import traceback
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def resolve_data_dir() -> str:
+    """定数据目录：参数 > data/ > samples/demo_data/。"""
+    if len(sys.argv) > 1 and sys.argv[1].strip():
+        return sys.argv[1]
+    real = os.path.join(ROOT, "data")
+    if os.path.isdir(real):
+        return real
+    demo = os.path.join(ROOT, "samples", "demo_data")
+    if os.path.isdir(demo):
+        return demo
+    raise SystemExit(
+        f"找不到数据目录：{real} 与 {demo} 都不存在。\n"
+        f"把你的断面 xlsx 放进 data\\，或指定目录："
+        f"python tools\\gui_smoke.py 你的数据目录"
+    )
 
 
 def strip_html(s: str) -> str:
@@ -21,7 +42,8 @@ try:
 
     from app.main import setup_font
 
-    app = QApplication(sys.argv)
+    # 只把程序名交给 Qt：数据目录可能在 argv[1]，Qt 会把它当未知选项报错
+    app = QApplication(sys.argv[:1])
     out.append("QApplication OK")
     out.append(f"界面字体：{setup_font(app) or '未找到'}")
     # ⚠ 离屏平台的 Qt **没有字体后端**：`QFontMetrics.inFont('起')` 恒为 False，
@@ -36,7 +58,7 @@ try:
     win = MainWindow()
     out.append("MainWindow OK")
 
-    win.data_dir = os.path.join(ROOT, "data")
+    win.data_dir = resolve_data_dir()
     win._load()
     out.append("_load OK: " + win.lbl_status.text())
 
