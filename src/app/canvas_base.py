@@ -52,7 +52,7 @@ def place_hover_note(ax, text: str, x: float, y: float,
     轴外，而 `PlotPanel.redraw()` 用的是 `fig.tight_layout()`——它会把**所有
     可见 artist 的包围盒**算进去，于是为了给框腾地方，**压缩绘图区**。
 
-    实测（`tools/probe_hover_bbox.py`，断面 sls2-6，画布 636 px）：
+    实测（`tools/probe_hover_bbox.py`，断面 secA-6，画布 636 px）：
     悬停第 10 个测点（起点距 33.22 m）时轴宽 551 → 401 px，**窄了 27%**；
     移开鼠标又弹回来，表现为"画布一闪一闪地缩"。
 

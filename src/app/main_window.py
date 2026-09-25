@@ -873,7 +873,7 @@ class MainWindow(QMainWindow):
         """把当前工程 / 结果 / 设置 / 当前组 / 当前断面推给两个面板。
 
         面板不自己维护选中状态，全部由这里推——只有一处真相，
-        不会出现"面板显示 yqc6-2、实际改到 sls2-1"这种错位。
+        不会出现"面板显示 secB-2、实际改到 secA-1"这种错位。
         """
         idx = max(self.lst_lines.currentRow(), 0)
         sec = self._current_section()

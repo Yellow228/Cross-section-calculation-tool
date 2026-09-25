@@ -184,7 +184,7 @@ try:
         f"{k}: " + "/".join(f"{vals[k][ln]:.5f}" for ln in list(vals["jc"])[:3])
         for k in vals))
     # jc 对 √S 加权（凹函数），无倒坡段时数学上必须 ≤ 两端点法。
-    # 有倒坡段被跳过的线不适用——分母变小会把结果抬高（实测 SJC4 因此高 1.4%）。
+    # 有倒坡段被跳过的线不适用——分母变小会把结果抬高（实测 secC 因此高 1.4%）。
     est_by_line = {e.line: e for e in win.dlg_slope.estimates}
     skipped_lines = [ln for ln in vals["jc"]
                      if est_by_line[ln].jc_skipped]

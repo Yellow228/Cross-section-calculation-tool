@@ -652,15 +652,15 @@ class TestExporter(unittest.TestCase):
 def make_raw_two_blocks() -> list[list]:
     """模拟真实表结构：块与块紧贴、无空行。
 
-    行1 断面编号|yqc6-1   行2 列头   行3-4 数据
-    行5 断面编号|yqc6-2   行6 列头   行7-8 数据
+    行1 断面编号|secB-1   行2 列头   行3-4 数据
+    行5 断面编号|secB-2   行6 列头   行7-8 数据
     """
     return [
-        ["断面编号", "yqc6-1"],
+        ["断面编号", "secB-1"],
         ["X坐标", "Y坐标", "起点距", "高程"],
         ["1", "2", "0", "10"],
         ["1", "2", "1", "9"],
-        ["断面编号", "yqc6-2"],
+        ["断面编号", "secB-2"],
         ["X坐标", "Y坐标", "起点距", "高程"],
         ["1", "2", "0", "8"],
         ["1", "2", "1", "7"],
@@ -672,13 +672,13 @@ class TestBlockSplit(unittest.TestCase):
 
     def test_classify(self):
         cfg = Config()
-        self.assertEqual(classify("yqc6-1", cfg), "cross")
-        self.assertEqual(classify("SJC4-12", cfg), "cross")
+        self.assertEqual(classify("secB-1", cfg), "cross")
+        self.assertEqual(classify("secC-12", cfg), "cross")
         self.assertEqual(classify("纵断面", cfg), "profile")
         self.assertEqual(classify("桥", cfg), "skip")
 
     def test_classify_numbered_profile_blocks(self):
-        """带编号的纵剖面块也要认出来（2三凌山有 纵断面1/2/3）。
+        """带编号的纵剖面块也要认出来（sample_a有 纵断面1/2/3）。
 
         曾用精确相等匹配，导致这些块被当成"非编号块"排除，
         整个文件的横断面都找不到归属的纵断面。
@@ -698,7 +698,7 @@ class TestBlockSplit(unittest.TestCase):
     def test_keep_all_points_by_default(self):
         cfg = Config()                       # compat_drop_last_point 默认 False
         blocks = split_blocks(make_raw_two_blocks(), cfg)
-        self.assertEqual([b.name for b in blocks], ["yqc6-1", "yqc6-2"])
+        self.assertEqual([b.name for b in blocks], ["secB-1", "secB-2"])
         self.assertEqual([len(b.rows) for b in blocks], [2, 2])
 
     def test_compat_drop_last_point(self):
@@ -724,7 +724,7 @@ class TestBlockSplit(unittest.TestCase):
         blocks = split_blocks(raw, cfg)
         parsed = blocks_to_sections(blocks, cfg)
 
-        self.assertEqual([s.name for s in parsed.sections], ["yqc6-1", "yqc6-2"])
+        self.assertEqual([s.name for s in parsed.sections], ["secB-1", "secB-2"])
         self.assertEqual(parsed.skipped, ["桥"])
         self.assertEqual(len(parsed.profiles), 1)
         self.assertEqual(parsed.profiles[0].dist, [0.0, 50.0, 90.0])
@@ -741,7 +741,7 @@ class TestBlockSplit(unittest.TestCase):
     def test_multiple_profile_blocks_preserved(self):
         """一个文件含多个「纵断面」块时，全部保留（曾经只留最后一个）。
 
-        真实情况：2三凌山.xlsx 有 3 个纵断面块、铜山溪沟7 有 2 个。
+        真实情况：sample_a.xlsx 有 3 个纵断面块、sample_e 有 2 个。
         """
         raw = [
             ["断面编号", "纵断面"],
@@ -774,7 +774,7 @@ class TestBlockSplit(unittest.TestCase):
     def test_build_lines_multi_profile_spatial(self):
         """一个文件含 2 条纵断面线时，按相交关系把横断面分给各自那条。
 
-        模拟 2三凌山.xlsx：一个文件里 3 个「纵断面」块、11 个横断面。
+        模拟 sample_a.xlsx：一个文件里 3 个「纵断面」块、11 个横断面。
         """
         from core.reader import _build_lines, ParsedBlocks
         from core.model import ProfileData
@@ -790,25 +790,25 @@ class TestBlockSplit(unittest.TestCase):
                            s=[0.0, 10.0], z=[0.0, 0.0],
                            params=SectionParams(name=name))
 
-        secs = [mk("sls2-1", 0.0), mk("sls2-2", 0.0), mk("sls2-3", 100.0)]
+        secs = [mk("secA-1", 0.0), mk("secA-2", 0.0), mk("secA-3", 100.0)]
         parsed = ParsedBlocks(sections=secs, profiles=[pA, pB],
                               seq=[("profile", 0), ("cross", 0), ("cross", 1),
                                    ("profile", 1), ("cross", 2)])
         cfg = Config()
         warnings: list[str] = []
-        lines = _build_lines([("2三凌山", parsed)], cfg, warnings)
+        lines = _build_lines([("sample_a", parsed)], cfg, warnings)
 
         self.assertEqual(len(lines), 2)
         by_members = {tuple(s.name for s in ln.sections) for ln in lines}
-        self.assertIn(("sls2-1", "sls2-2"), by_members)
-        self.assertIn(("sls2-3",), by_members)
+        self.assertIn(("secA-1", "secA-2"), by_members)
+        self.assertIn(("secA-3",), by_members)
         # 两条线同名 -> 加 -段N
-        self.assertEqual(sorted(ln.name for ln in lines), ["sls2-段1", "sls2-段2"])
+        self.assertEqual(sorted(ln.name for ln in lines), ["secA-段1", "secA-段2"])
 
     def test_duplicate_line_names_get_segment_suffix(self):
         """同名纵断面线加 -段N 后缀，避免下拉框里分不清"""
-        out = _dedupe_names(["sls2", "yqc6", "sls2", "sls2"])
-        self.assertEqual(out, ["sls2-段1", "yqc6", "sls2-段2", "sls2-段3"])
+        out = _dedupe_names(["secA", "secB", "secA", "secA"])
+        self.assertEqual(out, ["secA-段1", "secB", "secA-段2", "secA-段3"])
 
 
 class TestChainageOrigin(unittest.TestCase):

@@ -311,7 +311,7 @@ def describe_source(meta: dict) -> str:
 
 
 def default_project_name(project: Project) -> str:
-    """没指定文件名时，用第一条纵断面线命名，如 `yqc6.dmprj`。"""
+    """没指定文件名时，用第一条纵断面线命名，如 `secB.dmprj`。"""
     if project.profile_lines:
         return f"{project.profile_lines[0].name}{SUFFIX}"
     return f"未命名工程{SUFFIX}"

@@ -194,7 +194,7 @@ def _write_file(path: str, lines: list[dict]) -> None:
 def _emit_project(outdir: str, project_path: str) -> None:
     """顺带存一份**基于示范数据**的工程文件示例。
 
-    ⚠⚠ 这一份必须重新生成，绝不能沿用旧的 `samples/示例工程.dmprj`：
+    ⚠⚠ 这一份必须重新生成，绝不能沿用旧的 `samples/demo_project.dmprj`：
     它里面装着**真实测量数据的完整坐标数组**（31 个断面的 x/y/s/z，共约 560 个
     33xxxxx 量级的真实北坐标）、5 个真实文件名，以及 `source.dir` 上的本机绝对路径。
     `.dmprj` 是"数据快照"，把 `data/*.xlsx` 移出仓库并不等于数据没进仓库——
@@ -226,7 +226,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="生成可公开分发的示范断面数据")
     ap.add_argument("--outdir", default=DEFAULT_OUT)
     ap.add_argument("--project", default=None,
-                    help="顺带生成工程文件示例（默认 samples/示例工程.dmprj）")
+                    help="顺带生成工程文件示例（默认 samples/demo_project.dmprj）")
     a = ap.parse_args()
 
     by_file: dict[str, list[dict]] = {}
@@ -242,7 +242,7 @@ def main() -> None:
         print(f"  {fname}：{len(specs)} 条纵断面线 / {n} 个横断面")
 
     project_path = a.project or os.path.join(
-        os.path.dirname(a.outdir.rstrip(os.sep)), "示例工程.dmprj")
+        os.path.dirname(a.outdir.rstrip(os.sep)), "demo_project.dmprj")
     _emit_project(a.outdir, project_path)
 
     print()

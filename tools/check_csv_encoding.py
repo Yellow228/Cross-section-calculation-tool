@@ -81,7 +81,7 @@ def main() -> int:
     for dp, _dn, fns in os.walk(out_dir):
         # 跳过预览图目录。注意要按**相对路径的分量**判断，
         # 不能用子串匹配——否则 out_dir 本身叫 _selftest 时，其下所有子目录
-        # （如 _selftest\SJC4）都会因路径含 "_selftest" 而被误跳过。
+        # （如 _selftest\secC）都会因路径含 "_selftest" 而被误跳过。
         rel = os.path.relpath(dp, out_dir)
         if rel != "." and any(p in ("_preview", "_selftest")
                               for p in rel.split(os.sep)):

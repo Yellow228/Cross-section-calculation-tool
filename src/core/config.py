@@ -2,7 +2,7 @@
 
 原 MATLAB 中这些值硬编码在 transfer.m 开头，此处全部提出为可配置项。
 
-兼容开关说明（详见项目方案 §4.4）：
+兼容开关说明（详见DESIGN.md §4.4）：
     compat_drop_last_point  True 时复现 MATLAB 丢掉每个断面末测点的行为，用于回归验证
 默认关闭（即采用修复后的新行为）；回归比对时打开它应与 MATLAB 完全一致。
 
@@ -72,7 +72,7 @@ class Config:
     # ---------------- 块识别（Q11：非编号块一律排除）----------------
     # 纵剖面块名：匹配上的块不作为横断面计算，而是作为该纵断面线的剖面实测数据
     profile_block_name: str = "纵断面"
-    # 合法横断面名的正则：默认「前缀-序号」，如 yqc6-1 / SJC4-1
+    # 合法横断面名的正则：默认「前缀-序号」，如 secB-1 / secC-1
     cross_section_pattern: str = r"^[^\-_]+[-_]\d+$"
     # True 时，既不是纵剖面块、又不符合上面正则的块（如「桥」）直接跳过并告警
     exclude_non_numbered: bool = True
