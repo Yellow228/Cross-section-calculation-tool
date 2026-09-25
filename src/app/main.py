@@ -161,6 +161,12 @@ def _selftest(argv: list[str]) -> int:
         lines.append("关于面板 OK：" + "　".join(head[:5])
                      + f"　…（共 {len(head)} 行，含版本历史）")
         assert "版本历史" in about, "关于里看不到版本历史"
+        # 签名是用户明确要求留在「关于」里的（落款），别在重构时被顺手删掉。
+        # 同时验"它在最后一段"——位置也是要求的一部分（要像落款，不是混在正文里）。
+        assert f"签名：{V.SIGNATURE}" in about, "关于里看不到签名"
+        assert about.rstrip().endswith(V.SIGNATURE), \
+            f"签名应位于「关于」最后一行，实际结尾：{about.rstrip()[-20:]!r}"
+        lines.append(f"关于面板签名 OK：{V.SIGNATURE}（位于最后一行）")
         win.dlg_about.hide()
 
         # 批量填写改版：三页签表格 + 只显示当前组 + 从表格写回参数
