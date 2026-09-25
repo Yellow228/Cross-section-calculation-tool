@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import importlib
 import os
 import sys
 import traceback
@@ -56,6 +57,61 @@ def setup_font(app) -> str | None:
     return None
 
 
+class _SelftestMB:
+    """自检期间顶替 `QMessageBox` 的替身：一律不弹、不阻塞。
+
+    自检是**无人值守**的，任何一个真弹窗都会让它永久卡死、且不产生任何输出
+    （`_selftest.txt` 也不会写出来），排查起来毫无线索。
+    """
+
+    Yes, No, Ok = 1, 0, 1
+    Save, Discard, Cancel = 2, 3, 4
+
+    @staticmethod
+    def warning(*a, **k):
+        pass
+
+    @staticmethod
+    def information(*a, **k):
+        pass
+
+    @staticmethod
+    def question(*a, **k):
+        return 1
+
+
+#: 会自己 import QMessageBox 的界面模块。`from ... import QMessageBox` 是把类
+#: **绑进各自命名空间**的，所以必须逐个替换——只换 main_window 挡不住别处。
+_MB_MODULES = ("app.main_window", "app.dialogs", "app.section_editor")
+
+
+def _install_msgbox_stub() -> dict:
+    """给所有界面模块装上替身，返回原对象以便还原。
+
+    ⚠ 必须在**构造 MainWindow 之前**装。曾把这些代码放在"手动调节"那一段里，
+    结果没有数据时 `_open_batch_dialog()` 先弹了「请先载入数据」，
+    自检就卡死在那里——那时替身还没装上。
+    """
+    saved: dict = {}
+    for mod_name in _MB_MODULES:
+        try:
+            mod = importlib.import_module(mod_name)
+        except Exception:                            # pragma: no cover
+            continue
+        if hasattr(mod, "QMessageBox"):
+            saved[mod_name] = mod.QMessageBox
+            mod.QMessageBox = _SelftestMB
+    return saved
+
+
+def _restore_msgbox(saved: dict) -> None:
+    for mod_name, orig in saved.items():
+        try:
+            importlib.import_module(mod_name).QMessageBox = orig
+        except Exception:                            # pragma: no cover
+            pass
+
+
 def _selftest(argv: list[str]) -> int:
     """离屏构造界面、载入数据、渲染三张图，验证整包可用。"""
     os.environ["QT_QPA_PLATFORM"] = "offscreen"
@@ -68,6 +124,10 @@ def _selftest(argv: list[str]) -> int:
     data_dir = argv[0] if argv else os.path.join(base, "data")
     log_path = os.path.join(os.getcwd(), "_selftest.txt")
     lines: list[str] = []
+
+    # 弹窗替身要**最早**装（在构造 MainWindow 之前）：没有数据时
+    # `_open_batch_dialog()` 会弹「请先载入数据」，装晚了就卡死在那儿。
+    saved_mb = _install_msgbox_stub()
 
     try:
         from PySide6.QtWidgets import QApplication
@@ -110,6 +170,16 @@ def _selftest(argv: list[str]) -> int:
             lines.append("载入数据 OK：" + win.lbl_status.text())
         else:
             lines.append(f"数据目录不存在（跳过载入）：{data_dir}")
+
+        # 自检验的就是「载入数据 → 渲染三图 → 导出」整条链路，没数据就无从进行。
+        # ⚠ 数据目录**不在仓库里**（真实测量数据不公开），所以第一次 clone
+        #   下来直接跑自检必然走到这里——给他一句能照做的话，
+        #   而不是让它掉进后面某个 AttributeError 里。
+        assert win.project is not None, (
+            f"自检需要断面数据，但 {data_dir} 下没有可用的 xlsx。\n"
+            f"数据不随仓库分发（真实测量数据），请把你的断面 xlsx 放进 data\\，\n"
+            f"或用参数指定目录：python src\\app\\main.py --selftest 你的数据目录"
+        )
 
         # 逐个切换，确保每个视图都能画出来
         tabs = ["断面形态", "水位–流量曲线", "沿河纵剖面"]
@@ -222,29 +292,9 @@ def _selftest(argv: list[str]) -> int:
             lines.append("比降应用 OK：" + win.lbl_status.text()[:70])
 
         # ---- 手动调节（Q14）：深泓点 / 分区边界 / 成灾水位 ----
-        # 弹窗会阻塞无人值守的自检，先把主窗口模块里的 QMessageBox 换成替身。
+        # 弹窗替身已在 `_selftest()` 开头统一装好（见 `_install_msgbox_stub`）。
         # 这里直接调 _on_section_picked（等价于"图上点了一下第 idx 个测点"），
         # 真实的点击/吸附链路由 tools/gui_smoke.py 覆盖。
-        import app.main_window as MW
-
-        class _StubMB:
-            Yes, No, Ok = 1, 0, 1
-            Save, Discard, Cancel = 2, 3, 4
-
-            @staticmethod
-            def warning(*a, **k):
-                pass
-
-            @staticmethod
-            def information(*a, **k):
-                pass
-
-            @staticmethod
-            def question(*a, **k):
-                return 1
-
-        _saved_mb = MW.QMessageBox
-        MW.QMessageBox = _StubMB
         try:
             # 注意：不要写成"最后两项 == [分区调节, 成灾水位]"——
             # 末尾加了「帮助」菜单后这条就失效了，按名字查更稳。
@@ -457,7 +507,6 @@ def _selftest(argv: list[str]) -> int:
             assert sec.z == z0, "还原未恢复打开时的高程"
             lines.append("插入 / 删除 / 撤销 / 还原 OK")
         finally:
-            MW.QMessageBox = _saved_mb
             win.dlg_zone.hide()
             win.dlg_disaster.hide()
 
@@ -484,6 +533,8 @@ def _selftest(argv: list[str]) -> int:
         lines.append("SELFTEST FAILED")
         lines.append(traceback.format_exc())
         code = 1
+
+    _restore_msgbox(saved_mb)
 
     try:
         with open(log_path, "w", encoding="utf-8") as f:
