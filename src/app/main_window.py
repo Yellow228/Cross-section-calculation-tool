@@ -180,6 +180,7 @@ class MainWindow(QMainWindow):
             d.resetGroupRequested.connect(self._on_manual_reset_group)
             d.groupChanged.connect(self._on_manual_group_changed)
             d.sectionActivated.connect(self._on_manual_section_activated)
+            d.valuesChanged.connect(self._on_manual_values_changed)
 
         mb = self.menuBar()
         self._build_file_menu(mb)
@@ -1062,6 +1063,11 @@ class MainWindow(QMainWindow):
         """双击状态表某行 -> 主界面切到该断面（面板顶部会跟着更新）。"""
         if 0 <= row < self.lst_secs.count():
             self.lst_secs.setCurrentRow(row)
+
+    def _on_manual_values_changed(self):
+        """面板内的非拾取类数值修改（如局部水头损失系数）。"""
+        self._recalc()
+        self._set_dirty()
 
     # ---------------- 列表 ----------------
     def _refresh_line_list(self):

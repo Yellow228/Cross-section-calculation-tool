@@ -1,3 +1,12 @@
+"""一维水动力推算模块（恒定流水面线推算）
+
+遵循零第三方依赖约束（无 Numpy/Scipy），使用纯 Python 实现标准步长法（Standard Step Method）。
+支持流态：
+  - 缓流（subcritical）：从下游往上游推算
+  - 急流（supercritical）：从上游往下游推算
+  - 混合流 / 自动（mixed / auto）：暂时回退到缓流处理
+"""
+
 import math
 from dataclasses import dataclass
 from typing import Optional
@@ -42,10 +51,11 @@ class HydroNode:
         return (self.Q / k) ** 2
 
 
-def get_node_state(sec: Section, Z: float, Q: float, dist: float, cfg) -> HydroNode:
+def get_node_state(sec: Section, Z: float, Q: float, dist: float, cfg, info=None) -> HydroNode:
     """根据给定的水位 Z 计算断面水力要素"""
     # 计算几何
-    info = analyze_terrain(sec, cfg.steep_slope, cfg.turn_slope)
+    if info is None:
+        info = analyze_terrain(sec, cfg)
 
     if cfg.compound_mode:
         zones = info.zones
@@ -148,17 +158,19 @@ def standard_step_method_subcritical(
     dist_up: float,
     z_min: float,
     z_max: float,
-    cfg
+    cfg,
+    info_down=None,
+    info_up=None
 ) -> float:
     """
     缓流：从下游推上游 (标准步长法)
     求上游断面水位 Z_up
     """
-    node_d = get_node_state(sec_down, Z_down, Q_down, dist_down, cfg)
+    node_d = get_node_state(sec_down, Z_down, Q_down, dist_down, cfg, info_down)
     L = abs(dist_up - dist_down)
 
     def energy_diff(Z_up_guess: float) -> float:
-        node_u = get_node_state(sec_up, Z_up_guess, Q_up, dist_up, cfg)
+        node_u = get_node_state(sec_up, Z_up_guess, Q_up, dist_up, cfg, info_up)
         # 摩擦水头损失
         Sf_avg = (node_d.Sf + node_u.Sf) / 2
         hf = Sf_avg * L
@@ -199,17 +211,19 @@ def standard_step_method_supercritical(
     dist_down: float,
     z_min: float,
     z_max: float,
-    cfg
+    cfg,
+    info_up=None,
+    info_down=None
 ) -> float:
     """
     急流：从上游推下游 (标准步长法)
     求下游断面水位 Z_down
     """
-    node_u = get_node_state(sec_up, Z_up, Q_up, dist_up, cfg)
+    node_u = get_node_state(sec_up, Z_up, Q_up, dist_up, cfg, info_up)
     L = abs(dist_up - dist_down)
 
     def energy_diff(Z_down_guess: float) -> float:
-        node_d = get_node_state(sec_down, Z_down_guess, Q_down, dist_down, cfg)
+        node_d = get_node_state(sec_down, Z_down_guess, Q_down, dist_down, cfg, info_down)
         Sf_avg = (node_d.Sf + node_u.Sf) / 2
         hf = Sf_avg * L
         is_contraction = node_d.V > node_u.V
@@ -263,8 +277,10 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None) -> lis
     Qs = []
     Z_initials = []
     dists = []
+    infos = []
 
     for i, sec in enumerate(sections):
+        infos.append(analyze_terrain(sec, cfg))
         Qs.append(sec.params.design_q if not math.isnan(sec.params.design_q) else 100.0)
         dist = line.chainage[i] if line.chainage else sec.s[0]
         dists.append(dist)
@@ -295,7 +311,8 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None) -> lis
             Z_up = standard_step_method_subcritical(
                 sec_down, res_levels[i+1], Qs[i+1], dists[i+1],
                 sec_up, Qs[i], dists[i],
-                z_min_up, z_max_up, cfg
+                z_min_up, z_max_up, cfg,
+                info_down=infos[i+1], info_up=infos[i]
             )
             # 防止跌破临界水深
             Z_crit = compute_critical_depth(sec_up, Qs[i], z_min_up, z_max_up)
@@ -314,7 +331,8 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None) -> lis
             Z_down = standard_step_method_supercritical(
                 sec_up, res_levels[i-1], Qs[i-1], dists[i-1],
                 sec_down, Qs[i], dists[i],
-                z_min_down, z_max_down, cfg
+                z_min_down, z_max_down, cfg,
+                info_up=infos[i-1], info_down=infos[i]
             )
             Z_crit = compute_critical_depth(sec_down, Qs[i], z_min_down, z_max_down)
             res_levels[i] = min(Z_down, Z_crit)

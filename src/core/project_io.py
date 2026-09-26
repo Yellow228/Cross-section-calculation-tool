@@ -40,7 +40,7 @@ FORMAT_ID = "duanmian-project"
 # v2：断面新增「手动覆盖」字段（深泓点 / 分区边界 / 成灾水位），见 model.Section。
 #     读取时按"缺字段即全自动"处理，所以 v1 文件仍能正常打开（向后兼容）。
 #     反向（v1 程序打开 v2 文件）会被版本检查挡下，避免静默丢掉人工设定。
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 
 SUFFIX = ".dmprj"
 FILE_FILTER = "断面工程文件 (*.dmprj);;所有文件 (*)"
@@ -156,6 +156,8 @@ def _section_to_dict(s: Section) -> dict:
         "zone_left": _oint(s.zone_left),
         "zone_right": _oint(s.zone_right),
         "disaster_idx_manual": _oint(s.disaster_idx_manual),
+        "hydro_loss_contraction": s.hydro_loss_contraction,
+        "hydro_loss_expansion": s.hydro_loss_expansion,
     }
 
 
@@ -173,6 +175,8 @@ def _section_from_dict(d: dict) -> Section:
         zone_left=_oint(d.get("zone_left")),
         zone_right=_oint(d.get("zone_right")),
         disaster_idx_manual=_oint(d.get("disaster_idx_manual")),
+        hydro_loss_contraction=d.get("hydro_loss_contraction"),
+        hydro_loss_expansion=d.get("hydro_loss_expansion"),
     )
 
 

@@ -1153,6 +1153,7 @@ class _ManualBase(QDialog):
     resetGroupRequested = Signal()     # 本组全部恢复自动
     groupChanged = Signal(int)         # 面板里换组 -> 主界面跟着切
     sectionActivated = Signal(int)     # 双击状态表某行 -> 主界面切到该断面
+    valuesChanged = Signal()           # 非拾取类修改（如系数调节） -> 重算与标脏
 
     TITLE = ""
     COLS: list[str] = []
@@ -1842,9 +1843,8 @@ class HydroLossDialog(_ManualBase):
         # 刷新自身显示
         self._fill_current()
         self._fill_table()
-        # 通知重算，这个面板和分区一样也会影响后续计算，需要发出 clearRequested/pickRequested（复用_ManualBase信号机制会太绕，这里我们可以借用 resetGroupRequested 或增加新信号）
-        # 这里最简单的是借用 pickRequested 来触发主界面的 update
-        self.pickRequested.emit("")
+        # 通知重算与标脏
+        self.valuesChanged.emit()
 
     def _is_manual(self, key: str) -> bool:
         if self.current is None:
