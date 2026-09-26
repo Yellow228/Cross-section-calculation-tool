@@ -7,8 +7,9 @@
 得到水位–流量关系；也支持按纵断面推算比降、在图上手动指定深泓点 / 分区边界 / 成灾水位。
 结果导出 CSV / Excel，并出三类图。
 
-由原 MATLAB 脚本（`original_matlab/transfer.m` 等）重写而来，**计算逻辑与原实现保持一致**
+由原 MATLAB 计算脚本重写而来，**计算逻辑与原实现保持一致**
 （与 MATLAB 的差异见 `DESIGN.md` 第三节）。
+原 MATLAB 脚本属历史参考资料，不随仓库分发。
 
 ![水位–流量关系曲线](docs/images/rating-curve.png)
 

@@ -7,14 +7,15 @@
 
 ## 一、这是什么
 
-把原 MATLAB 河道断面「水位–流量关系曲线」计算脚本（`original_matlab/*.m`）
+把原 MATLAB 河道断面「水位–流量关系曲线」计算脚本
 重写为 Python 桌面程序（PySide6 + matplotlib），并增加三类可视化。
+（原 MATLAB 脚本属历史参考资料，不随仓库分发。）
 
 **核心目标是与原 MATLAB 数值一致**，其次才是易用性和功能扩展。
 因此存在一条铁律：
 
 > 任何改动都先跑 `tests/test_core.py`，必须**全绿**。
-> 涉及数值逻辑的改动，必须能说清它与 `original_matlab/` 里的对应关系。
+> 涉及数值逻辑的改动，必须能说清它与原 MATLAB 实现的对应关系。
 
 项目不是从零设计——`DESIGN.md` 是**设计与决策档案**，
 含原 MATLAB 实现解构、10 个原实现缺陷（D1~D10）的处置结论、
@@ -191,7 +192,7 @@ samples/demo_data/          合成示范数据（见 §六）
 samples/demo_project.dmprj  由它生成的工程文件示例
 tests/test_core.py          单元测试
 src/app/assets/             icon.ico（多尺寸）+ icon.png
-original_matlab/            原 MATLAB 脚本，算法对照用
+original_matlab/            （本机）原 MATLAB 脚本，算法对照用；**不入库**，见 `.gitignore`
 ```
 
 ⚠ **三个目录刻意不入库**：`wheels/`（约 108 MB 离线依赖，用 `tools/fetch_wheels.py` 取回）、
