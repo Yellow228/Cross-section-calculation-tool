@@ -74,10 +74,10 @@ def solve_section(sec: Section, cfg: Config) -> tuple[SectionResult, TerrainInfo
     return result, info
 
 
-def solve_profile_line(line: ProfileLine, results: dict) -> None:
+def solve_profile_line(line: ProfileLine, cfg: Config, results: dict) -> None:
     """求解整个纵断面线的一维水动力推算。"""
     if line.hydro1d_enabled:
-        line.hydro1d_levels = compute_hydro1d_profile(line, results)
+        line.hydro1d_levels = compute_hydro1d_profile(line, cfg, results)
     else:
         line.hydro1d_levels = [float('nan')] * len(line.sections)
 

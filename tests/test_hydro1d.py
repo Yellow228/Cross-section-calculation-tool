@@ -39,10 +39,12 @@ class TestHydro1D(unittest.TestCase):
     def test_subcritical_step(self):
         # 假设下游 S2 水位为 12.0 (水深3m，缓流)
         # 从下游推上游 S1
+        from src.core.config import Config
+        cfg = Config()
         z_up = standard_step_method_subcritical(
             self.sec2, 12.0, 50.0, 100.0,
             self.sec1, 50.0, 0.0,
-            10.0, 20.0
+            10.0, 20.0, cfg
         )
         # 上游断面底高程比下游高1m，水面可能稍微下降(如果落差被抬升消化)
         # 但这里要检查 z_up 计算的数值是否符合物理预期
@@ -66,7 +68,9 @@ class TestHydro1D(unittest.TestCase):
             "S1": DummyResult(13.0),
             "S2": DummyResult(12.0)
         }
-        levels = compute_hydro1d_profile(line, results)
+        from src.core.config import Config
+        cfg = Config()
+        levels = compute_hydro1d_profile(line, cfg, results)
         self.assertEqual(len(levels), 2)
         self.assertAlmostEqual(levels[0], 11.979, places=2)
         self.assertEqual(levels[1], 12.0)

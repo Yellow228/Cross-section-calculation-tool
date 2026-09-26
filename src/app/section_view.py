@@ -24,7 +24,7 @@ from core.model import Section, SectionResult, TerrainInfo
 
 from .canvas_base import (COLOR_BED, COLOR_DESIGN, COLOR_DISASTER, COLOR_PEAK,
                           COLOR_PICK, COLOR_PLUS, COLOR_THALWEG, COLOR_TURN,
-                          COLOR_WARN, COLOR_WATER, PlotPanel, place_hover_note)
+                          COLOR_WARN, COLOR_WATER, COLOR_HYDRO1D, PlotPanel, place_hover_note)
 
 #: 拾取目标 -> 中文名。键同时用作信号参数，务必与主窗口/面板保持一致。
 PICK_LABELS = {
@@ -112,9 +112,11 @@ class SectionView(QWidget):
 
     # ---------------- 外部接口 ----------------
     def set_data(self, sec: Section | None, res: SectionResult | None,
-                 info: TerrainInfo | None, chainage: float | None = None):
+                 info: TerrainInfo | None, chainage: float | None = None,
+                 hydro1d_level: float | None = None):
         self.sec, self.res, self.info = sec, res, info
         self._chainage = chainage
+        self._hydro1d_level = hydro1d_level
         if sec is None or info is None:
             self.plot.draw_placeholder()
             return
@@ -386,6 +388,11 @@ class SectionView(QWidget):
                 rows.append((info.disaster_level, COLOR_DISASTER, "成灾水位（手动）", "-"))
             else:
                 rows.append((info.disaster_level, COLOR_DISASTER, "成灾水位", ":"))
+
+        hydro_y = getattr(self, "_hydro1d_level", None)
+        if hydro_y is not None and hydro_y == hydro_y:
+            rows.append((hydro_y, COLOR_HYDRO1D, "一维推算水面线", "--"))
+
         for y, c, lab, ls in rows:
             if y == y:
                 ax.axhline(y, color=c, lw=1.3 if manual_dis and c == COLOR_DISASTER else 1.1,

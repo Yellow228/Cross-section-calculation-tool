@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                               QGroupBox, QHBoxLayout, QHeaderView, QLabel,
                               QMessageBox, QPushButton, QRadioButton,
                               QScrollArea, QTableWidget, QTableWidgetItem,
-                              QTabWidget, QVBoxLayout, QWidget)
+                              QTabWidget, QVBoxLayout, QWidget, QDoubleSpinBox)
 
 from core.config import Config
 from core.model import Section
@@ -271,6 +271,26 @@ class SettingsDialog(QDialog):
         grp_calc = QGroupBox("计算")
         grp_calc.setLayout(form)
 
+        # ---- 一维水动力设置 ----
+        self.chk_alpha_auto = QCheckBox("自动加权计算（推荐）")
+        self.chk_alpha_auto.setChecked(cfg.kinetic_alpha_auto)
+        self.chk_alpha_auto.setToolTip(
+            "基于复式断面的分区输水能力（K_i）自动加权计算动能修正系数 α。\n"
+            "若关闭（或在单断面模式下），则使用下方指定的固定值。")
+        self.chk_alpha_auto.toggled.connect(lambda _: self.changed.emit())
+
+        self.spin_alpha = make_spin(1.0, 5.0, 0.05, 2, cfg.kinetic_alpha)
+        self.spin_alpha.setToolTip(
+            "动能修正系数 (α) 固定值。\n"
+            "在未精细划分主槽和滩地时，或选择不自动计算时使用，默认为 1.0。")
+        self.spin_alpha.valueChanged.connect(lambda _: self.changed.emit())
+
+        form_hydro = QFormLayout()
+        form_hydro.addRow("动能修正系数 α", self.chk_alpha_auto)
+        form_hydro.addRow("α 固定值", self.spin_alpha)
+        grp_hydro = QGroupBox("一维恒定流推算")
+        grp_hydro.setLayout(form_hydro)
+
         # ---- 导出设置 ----
         self.cmb_enc = QComboBox()
         self.cmb_enc.addItems([
@@ -310,6 +330,7 @@ class SettingsDialog(QDialog):
         lay = QVBoxLayout(self)
         lay.addWidget(grp_calc)
         lay.addWidget(grp_raise)
+        lay.addWidget(grp_hydro)
         lay.addWidget(grp_out)
         lay.addWidget(self.lbl_hint)
         lay.addLayout(row)
@@ -330,6 +351,8 @@ class SettingsDialog(QDialog):
         cfg.raise_enabled = self.chk_raise.isChecked()
         cfg.raise_level = self.spin_raise.value()
         cfg.csv_encoding = self.CSV_ENCODINGS[self.cmb_enc.currentIndex()]
+        cfg.kinetic_alpha_auto = self.chk_alpha_auto.isChecked()
+        cfg.kinetic_alpha = self.spin_alpha.value()
 
     def sync_from(self, cfg: Config) -> None:
         """把配置的值刷到界面上（打开工程文件后必须做，否则界面与实际不符）。
@@ -339,7 +362,7 @@ class SettingsDialog(QDialog):
         """
         widgets = (self.cmb_mode, self.spin_dh, self.cmb_origin,
                    self.spin_steep, self.spin_turn, self.chk_raise,
-                   self.spin_raise, self.cmb_enc)
+                   self.spin_raise, self.cmb_enc, self.chk_alpha_auto, self.spin_alpha)
         for w in widgets:
             w.blockSignals(True)
         try:
@@ -354,6 +377,8 @@ class SettingsDialog(QDialog):
             idx = (self.CSV_ENCODINGS.index(cfg.csv_encoding)
                    if cfg.csv_encoding in self.CSV_ENCODINGS else 0)
             self.cmb_enc.setCurrentIndex(idx)
+            self.chk_alpha_auto.setChecked(cfg.kinetic_alpha_auto)
+            self.spin_alpha.setValue(cfg.kinetic_alpha)
         finally:
             for w in widgets:
                 w.blockSignals(False)
@@ -1128,6 +1153,7 @@ class _ManualBase(QDialog):
     resetGroupRequested = Signal()     # 本组全部恢复自动
     groupChanged = Signal(int)         # 面板里换组 -> 主界面跟着切
     sectionActivated = Signal(int)     # 双击状态表某行 -> 主界面切到该断面
+    valuesChanged = Signal()           # 非拾取类修改（如系数调节） -> 重算与标脏
 
     TITLE = ""
     COLS: list[str] = []
@@ -1745,6 +1771,170 @@ def _auto_source(sec: Section, info) -> str:
     return (f"<span style='color:#888780'>（取自{side}转折点，"
             f"第 {k + 1} 个测点）</span>")
 
+
+class HydroLossDialog(_ManualBase):
+    """局部水头损失系数调节（收缩 / 扩张系数）。
+
+    默认值为：收缩系数 0.1，扩张系数 0.3。
+    仅用于一维恒定流推算。手动改写此处的值会覆盖该断面的默认系数。
+    """
+
+    TITLE = "局部水头损失系数"
+    COLS = ["本组断面", "桩号 m", "收缩系数 Cc", "扩张系数 Ce", "来源"]
+    HINT = ("手动修改特定断面的局部水头损失系数。\n"
+            "默认取值：收缩系数 (Cc) = 0.1，扩张系数 (Ce) = 0.3。\n"
+            "遇到桥梁、涵洞或急剧缩扩段时，可以调大该值（如 0.3 / 0.5）。\n"
+            "留空则表示使用程序默认值。")
+
+    def _build_body(self):
+        self._add_section("局部水头损失系数")
+
+        self.spin_contraction = QDoubleSpinBox()
+        self.spin_contraction.setRange(0.0, 1.0)
+        self.spin_contraction.setSingleStep(0.05)
+        self.spin_contraction.setDecimals(2)
+        self.spin_contraction.setKeyboardTracking(False)
+        self.spin_contraction.valueChanged.connect(lambda v: self._apply_val("contraction", v))
+
+        self.spin_expansion = QDoubleSpinBox()
+        self.spin_expansion.setRange(0.0, 1.0)
+        self.spin_expansion.setSingleStep(0.05)
+        self.spin_expansion.setDecimals(2)
+        self.spin_expansion.setKeyboardTracking(False)
+        self.spin_expansion.valueChanged.connect(lambda v: self._apply_val("expansion", v))
+
+        self.btn_clear_contraction = QPushButton("清除")
+        self.btn_clear_contraction.clicked.connect(lambda: self._apply_val("contraction", None))
+
+        self.btn_clear_expansion = QPushButton("清除")
+        self.btn_clear_expansion.clicked.connect(lambda: self._apply_val("expansion", None))
+
+        row1 = QHBoxLayout()
+        row1.addWidget(QLabel("收缩系数 Cc:"))
+        row1.addWidget(self.spin_contraction)
+        row1.addWidget(self.btn_clear_contraction)
+        row1.addStretch()
+        self.body.addLayout(row1, self._row, 0, 1, 4)
+        self._row += 1
+
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("扩张系数 Ce:"))
+        row2.addWidget(self.spin_expansion)
+        row2.addWidget(self.btn_clear_expansion)
+        row2.addStretch()
+        self.body.addLayout(row2, self._row, 0, 1, 4)
+        self._row += 1
+
+        # 将输入控件存起来方便禁用
+        self._inputs = {
+            "contraction": (self.spin_contraction, self.btn_clear_contraction),
+            "expansion": (self.spin_expansion, self.btn_clear_expansion)
+        }
+
+    def _apply_val(self, key, val):
+        if self.current is None:
+            return
+        sec = self.current
+        if key == "contraction":
+            sec.hydro_loss_contraction = val
+        else:
+            sec.hydro_loss_expansion = val
+
+        # 刷新自身显示
+        self._fill_current()
+        self._fill_table()
+        # 通知重算与标脏
+        self.valuesChanged.emit()
+
+    def _is_manual(self, key: str) -> bool:
+        if self.current is None:
+            return False
+        if key == "contraction":
+            return self.current.hydro_loss_contraction is not None
+        if key == "expansion":
+            return self.current.hydro_loss_expansion is not None
+        return False
+
+    def _row_manual_note(self, sec: Section) -> str:
+        res = []
+        if sec.hydro_loss_contraction is not None:
+            res.append(f"Cc={sec.hydro_loss_contraction:.2f}")
+        if sec.hydro_loss_expansion is not None:
+            res.append(f"Ce={sec.hydro_loss_expansion:.2f}")
+        return " ".join(res)
+
+    def _fill_current(self):
+        sec = self.current
+        if sec is None:
+            for sp, btn in self._inputs.values():
+                sp.blockSignals(True)
+                sp.setEnabled(False)
+                sp.setValue(0)
+                sp.blockSignals(False)
+                btn.setEnabled(False)
+            return
+
+        for sp, btn in self._inputs.values():
+            sp.setEnabled(True)
+
+        self._inputs["contraction"][0].blockSignals(True)
+        if sec.hydro_loss_contraction is not None:
+            self._inputs["contraction"][0].setValue(sec.hydro_loss_contraction)
+            self._inputs["contraction"][1].setEnabled(True)
+        else:
+            self._inputs["contraction"][0].setValue(0.1)  # 默认显示0.1
+            self._inputs["contraction"][1].setEnabled(False)
+        self._inputs["contraction"][0].blockSignals(False)
+
+        self._inputs["expansion"][0].blockSignals(True)
+        if sec.hydro_loss_expansion is not None:
+            self._inputs["expansion"][0].setValue(sec.hydro_loss_expansion)
+            self._inputs["expansion"][1].setEnabled(True)
+        else:
+            self._inputs["expansion"][0].setValue(0.3)  # 默认显示0.3
+            self._inputs["expansion"][1].setEnabled(False)
+        self._inputs["expansion"][0].blockSignals(False)
+
+    def _fill_table(self):
+        self.table.setRowCount(0)
+        cur_row = -1
+        for r, sec in enumerate(self.sections):
+            if sec is self.current:
+                cur_row = r
+            self.table.insertRow(r)
+
+            self.table.setItem(r, 0, QTableWidgetItem(sec.name))
+            ch = _chainage_of(self.project, self.line_index, r)
+            self.table.setItem(r, 1, QTableWidgetItem(f"{ch:.1f}" if ch is not None else "—"))
+
+            cc = sec.hydro_loss_contraction
+            ce = sec.hydro_loss_expansion
+
+            it_cc = QTableWidgetItem(f"{cc:.2f}" if cc is not None else "— (0.1)")
+            it_ce = QTableWidgetItem(f"{ce:.2f}" if ce is not None else "— (0.3)")
+            self.table.setItem(r, 2, it_cc)
+            self.table.setItem(r, 3, it_ce)
+
+            note = self._row_manual_note(sec)
+            it = QTableWidgetItem("手动" if note else "自动")
+            if note:
+                it.setForeground(QColor("#185FA5"))
+                it.setToolTip(f"人工设定：{note}")
+            self.table.setItem(r, 4, it)
+
+        self._highlight(cur_row)
+        self.table.resizeRowsToContents()
+
+    def _highlight(self, row: int):
+        if row < 0:
+            return
+        for c in range(len(self.COLS)):
+            it = self.table.item(row, c)
+            if it is not None:
+                it.setBackground(QColor("#E6F1FB"))
+
+    def _update_warn(self):
+        pass # 此面板不需要额外警告
 
 class AboutDialog(QDialog):
     """「关于」：版本信息 + 构建信息 + 版本历史。
