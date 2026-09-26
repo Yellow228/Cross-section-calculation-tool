@@ -1156,8 +1156,11 @@ class MainWindow(QMainWindow):
         if ln is not None and 0 <= row < len(ln.sections):
             sec = ln.sections[row]
             ch = (ln.chainage[row] if ln.chainage and row < len(ln.chainage) else None)
+            hydro_lvl = None
+            if ln.hydro1d_enabled and row < len(ln.hydro1d_levels):
+                hydro_lvl = ln.hydro1d_levels[row]
             self.view_section.set_data(sec, self.results[sec.name],
-                                       self.infos[sec.name], ch)
+                                       self.infos[sec.name], ch, hydro1d_level=hydro_lvl)
             self.view_rating.set_data(ordered, sec.name)
         else:
             self.view_rating.set_data(ordered, None)

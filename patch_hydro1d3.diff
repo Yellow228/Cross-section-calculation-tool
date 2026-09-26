@@ -1,0 +1,227 @@
+<<<<<<< SEARCH
+def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None) -> list[float]:
+    """计算整条纵断面线的一维水动力水位，返回推算的水位列表，与 sections 等长"""
+    sections = line.sections
+    n = len(sections)
+    results = results or {}
+
+    if n < 2:
+        # 断层面数量不足，无法推算，回退到原设计水位
+        res = [float('nan')] * n
+        for i, sec in enumerate(sections):
+            res_data = results.get(sec.name)
+            if res_data and not math.isnan(res_data.design_level):
+                res[i] = res_data.design_level
+        return res
+
+    # 初始化返回数组
+    res_levels = [float('nan')] * n
+
+    # 提取各断面参数
+    Qs = []
+    Z_initials = []
+    dists = []
+    infos = []
+
+    for i, sec in enumerate(sections):
+        infos.append(analyze_terrain(sec, cfg))
+        Qs.append(sec.params.design_q if not math.isnan(sec.params.design_q) else 100.0)
+        dist = line.chainage[i] if line.chainage else sec.s[0]
+        dists.append(dist)
+        # 获取现有的设计水位作为起推水位
+        res_data = results.get(sec.name)
+        if res_data and not math.isnan(res_data.design_level):
+            z_init = res_data.design_level
+        else:
+            z_init = max(sec.z)
+        Z_initials.append(z_init)
+
+    regime = line.hydro1d_regime
+
+    # 目前“混合流/自动”默认退化为缓流推算，因为纯混合流水面线推算需要复杂的水跃控制逻辑
+    if regime in ("mixed", "auto"):
+        regime = "subcritical"
+
+    if regime == "subcritical":
+        # 缓流：从下游推上游 (索引 n-1 -> 0)
+        res_levels[-1] = Z_initials[-1]  # 下游起推水位
+        for i in range(n - 2, -1, -1):
+            sec_up = sections[i]
+            sec_down = sections[i+1]
+
+            z_min_up = min(sec_up.z) + 0.01
+            z_max_up = max(sec_up.z) + 10.0
+
+            Z_up = standard_step_method_subcritical(
+                sec_down, res_levels[i+1], Qs[i+1], dists[i+1],
+                sec_up, Qs[i], dists[i],
+                z_min_up, z_max_up, cfg,
+                info_down=infos[i+1], info_up=infos[i]
+            )
+            # 防止跌破临界水深
+            Z_crit = compute_critical_depth(sec_up, Qs[i], z_min_up, z_max_up)
+            res_levels[i] = max(Z_up, Z_crit)
+
+    elif regime == "supercritical":
+        # 急流：从上游推下游 (索引 0 -> n-1)
+        res_levels[0] = Z_initials[0]  # 上游起推水位
+        for i in range(1, n):
+            sec_up = sections[i-1]
+            sec_down = sections[i]
+
+            z_min_down = min(sec_down.z) + 0.01
+            z_max_down = max(sec_down.z) + 10.0
+
+            Z_down = standard_step_method_supercritical(
+                sec_up, res_levels[i-1], Qs[i-1], dists[i-1],
+                sec_down, Qs[i], dists[i],
+                z_min_down, z_max_down, cfg,
+                info_up=infos[i-1], info_down=infos[i]
+            )
+            Z_crit = compute_critical_depth(sec_down, Qs[i], z_min_down, z_max_down)
+            res_levels[i] = min(Z_down, Z_crit)
+
+    return res_levels
+=======
+def downstream_index(sections: list[Section], infos: list) -> int:
+    """找出最下游断面的索引。以河底最低点定下游，独立于排列顺序和重定基策略。"""
+    if not sections:
+        return 0
+    # 使用 analyze_terrain 中的 info.dmin，如果 infos 没有对应，回退
+    idx = 0
+    min_z = infos[0].dmin if infos and infos[0] else min(sections[0].z)
+    for i in range(1, len(sections)):
+        z = infos[i].dmin if infos and i < len(infos) and infos[i] else min(sections[i].z)
+        if z < min_z:
+            min_z = z
+            idx = i
+    return idx
+
+
+def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None) -> list[float]:
+    """计算整条纵断面线的一维水动力水位，返回推算的水位列表，与 sections 等长"""
+    sections = line.sections
+    n = len(sections)
+    results = results or {}
+
+    if n < 2:
+        # 断层面数量不足，无法推算，回退到原设计水位
+        res = [float('nan')] * n
+        for i, sec in enumerate(sections):
+            res_data = results.get(sec.name)
+            if res_data and not math.isnan(res_data.design_level):
+                res[i] = res_data.design_level
+        return res
+
+    # 初始化返回数组
+    res_levels = [float('nan')] * n
+
+    # 提取各断面参数
+    Z_initials = []
+    dists = []
+    infos = []
+
+    for i, sec in enumerate(sections):
+        infos.append(analyze_terrain(sec, cfg))
+        dist = line.chainage[i] if line.chainage else sec.s[0]
+        dists.append(dist)
+        # 获取现有的设计水位作为起推水位
+        res_data = results.get(sec.name)
+        if res_data and not math.isnan(res_data.design_level):
+            z_init = res_data.design_level
+        else:
+            z_init = max(sec.z)
+        Z_initials.append(z_init)
+
+    ds_idx = downstream_index(sections, infos)
+    us_idx = 0 if ds_idx == n - 1 else n - 1
+
+    # 提取整个河段固定使用的流量 (取最上游断面)
+    q_val = sections[us_idx].params.design_q
+    if math.isnan(q_val):
+        q_val = 50.0  # 与项目的默认占位符保持一致
+
+    Qs = [q_val] * n
+
+    regime = line.hydro1d_regime
+
+    # 目前“混合流/自动”默认退化为缓流推算，因为纯混合流水面线推算需要复杂的水跃控制逻辑
+    if regime in ("mixed", "auto"):
+        regime = "subcritical"
+
+    # 判断方向是否需要倒序遍历 (即索引 0 是下游还是 n-1 是下游)
+    if ds_idx == 0:
+        # 索引 0 是下游
+        if regime == "subcritical":
+            # 缓流：从下游推上游 (0 -> n-1)
+            res_levels[0] = Z_initials[0]
+            for i in range(1, n):
+                sec_up = sections[i]
+                sec_down = sections[i-1]
+                z_min_up = min(sec_up.z) + 0.01
+                z_max_up = max(sec_up.z) + 10.0
+
+                Z_up = standard_step_method_subcritical(
+                    sec_down, res_levels[i-1], Qs[i-1], dists[i-1],
+                    sec_up, Qs[i], dists[i],
+                    z_min_up, z_max_up, cfg,
+                    info_down=infos[i-1], info_up=infos[i]
+                )
+                Z_crit = compute_critical_depth(sec_up, Qs[i], z_min_up, z_max_up)
+                res_levels[i] = max(Z_up, Z_crit)
+        else:
+            # 急流：从上游推下游 (n-1 -> 0)
+            res_levels[-1] = Z_initials[-1]
+            for i in range(n - 2, -1, -1):
+                sec_up = sections[i+1]
+                sec_down = sections[i]
+                z_min_down = min(sec_down.z) + 0.01
+                z_max_down = max(sec_down.z) + 10.0
+
+                Z_down = standard_step_method_supercritical(
+                    sec_up, res_levels[i+1], Qs[i+1], dists[i+1],
+                    sec_down, Qs[i], dists[i],
+                    z_min_down, z_max_down, cfg,
+                    info_up=infos[i+1], info_down=infos[i]
+                )
+                Z_crit = compute_critical_depth(sec_down, Qs[i], z_min_down, z_max_down)
+                res_levels[i] = min(Z_down, Z_crit)
+    else:
+        # 索引 n-1 是下游
+        if regime == "subcritical":
+            # 缓流：从下游推上游 (n-1 -> 0)
+            res_levels[-1] = Z_initials[-1]
+            for i in range(n - 2, -1, -1):
+                sec_up = sections[i]
+                sec_down = sections[i+1]
+                z_min_up = min(sec_up.z) + 0.01
+                z_max_up = max(sec_up.z) + 10.0
+
+                Z_up = standard_step_method_subcritical(
+                    sec_down, res_levels[i+1], Qs[i+1], dists[i+1],
+                    sec_up, Qs[i], dists[i],
+                    z_min_up, z_max_up, cfg,
+                    info_down=infos[i+1], info_up=infos[i]
+                )
+                Z_crit = compute_critical_depth(sec_up, Qs[i], z_min_up, z_max_up)
+                res_levels[i] = max(Z_up, Z_crit)
+        else:
+            # 急流：从上游推下游 (0 -> n-1)
+            res_levels[0] = Z_initials[0]
+            for i in range(1, n):
+                sec_up = sections[i-1]
+                sec_down = sections[i]
+                z_min_down = min(sec_down.z) + 0.01
+                z_max_down = max(sec_down.z) + 10.0
+
+                Z_down = standard_step_method_supercritical(
+                    sec_up, res_levels[i-1], Qs[i-1], dists[i-1],
+                    sec_down, Qs[i], dists[i],
+                    z_min_down, z_max_down, cfg,
+                    info_up=infos[i-1], info_down=infos[i]
+                )
+                Z_crit = compute_critical_depth(sec_down, Qs[i], z_min_down, z_max_down)
+                res_levels[i] = min(Z_down, Z_crit)
+
+    return res_levels
+>>>>>>> REPLACE
