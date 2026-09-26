@@ -51,7 +51,6 @@ class TestHydro1D(unittest.TestCase):
 
     def test_compute_profile(self):
         # 组装 ProfileLine
-        self.sec2.params.design_level = 12.0 # 下游起推水位
         line = ProfileLine(
             name="test_line",
             sections=[self.sec1, self.sec2],
@@ -59,7 +58,15 @@ class TestHydro1D(unittest.TestCase):
             hydro1d_enabled=True,
             hydro1d_regime="subcritical"
         )
-        levels = compute_hydro1d_profile(line)
+        # 用 results 提供设计水位
+        class DummyResult:
+            def __init__(self, dl):
+                self.design_level = dl
+        results = {
+            "S1": DummyResult(13.0),
+            "S2": DummyResult(12.0)
+        }
+        levels = compute_hydro1d_profile(line, results)
         self.assertEqual(len(levels), 2)
         self.assertAlmostEqual(levels[0], 11.979, places=2)
         self.assertEqual(levels[1], 12.0)

@@ -129,6 +129,54 @@ class Hydro1DDialog(QDialog):
         self.accept()
 
 
+class ExportOptionsDialog(QDialog):
+    """导出选项对话框，让用户选择要导出哪些 CSV 文件。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("选择导出选项")
+
+        self.options = {
+            'range_design': QCheckBox("设计水位淹没范围坐标.csv"),
+            'disaster': QCheckBox("成灾水位坐标.csv"),
+            'rating': QCheckBox("水位流量关系曲线.csv"),
+            'inundation': QCheckBox("淹没线坐标输出结果.csv (原MATLAB混合版)"),
+            'endpoint': QCheckBox("断面起终点坐标及水位.csv"),
+            'range_raised': QCheckBox("设计水位加高淹没范围坐标.csv"),
+            'hydro1d': QCheckBox("一维推算水面线.csv (仅已启用的线)"),
+            'hydro1d_range': QCheckBox("一维推算水面线淹没范围坐标.csv (仅已启用的线)"),
+        }
+
+        # 默认只勾选用户要求的三项
+        defaults = {'range_design', 'disaster', 'rating'}
+        for key, chk in self.options.items():
+            if key in defaults:
+                chk.setChecked(True)
+            else:
+                chk.setChecked(False)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("请勾选需要导出的文件类型："))
+
+        for chk in self.options.values():
+            layout.addWidget(chk)
+
+        btn_layout = QHBoxLayout()
+        btn_ok = QPushButton("确定并选择目录")
+        btn_ok.clicked.connect(self.accept)
+        btn_cancel = QPushButton("取消")
+        btn_cancel.clicked.connect(self.reject)
+
+        btn_layout.addStretch()
+        btn_layout.addWidget(btn_cancel)
+        btn_layout.addWidget(btn_ok)
+
+        layout.addLayout(btn_layout)
+
+    def get_options(self) -> dict[str, bool]:
+        return {key: chk.isChecked() for key, chk in self.options.items()}
+
+
 class SettingsDialog(QDialog):
     """计算设置：断面模式 / 水位步长 / 桩号原点 / 转折点阈值 / CSV 编码。
 

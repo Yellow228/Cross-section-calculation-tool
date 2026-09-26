@@ -28,7 +28,8 @@ from core import version as version_mod
 
 from core.chainage import compute_chainage
 from .dialogs import (AboutDialog, BatchDialog, DisasterDialog,
-                      SettingsDialog, SlopeDialog, ZoneDialog, Hydro1DDialog)
+                      SettingsDialog, SlopeDialog, ZoneDialog, Hydro1DDialog,
+                      ExportOptionsDialog)
 from .param_panel import ParamPanel
 from .profile_view import ProfileView
 from .rating_view import RatingView
@@ -1156,13 +1157,26 @@ class MainWindow(QMainWindow):
         if self.project is None:
             QMessageBox.information(self, "提示", "请先载入数据。")
             return
+
+        # 先弹窗让用户选择要导出的文件种类
+        dlg = ExportOptionsDialog(self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+
+        options = dlg.get_options()
+
         out = QFileDialog.getExistingDirectory(self, "选择导出目录", self.cfg.output_dir)
         if not out:
             return
+
         try:
-            written = export_all(self.project, self.results, self.infos, self.cfg, out)
+            written = export_all(self.project, self.results, self.infos, self.cfg, out, options=options)
         except Exception as e:
             QMessageBox.critical(self, "导出失败", str(e))
             return
-        QMessageBox.information(self, "导出完成", f"已生成 {len(written)} 个文件：\n" +
-                                "\n".join(written))
+
+        if not written:
+            QMessageBox.information(self, "导出完成", "当前选择未生成任何文件。")
+        else:
+            QMessageBox.information(self, "导出完成", f"已生成 {len(written)} 个文件：\n" +
+                                    "\n".join(written))
