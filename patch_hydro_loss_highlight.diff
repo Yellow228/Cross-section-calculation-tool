@@ -1,0 +1,23 @@
+<<<<<<< SEARCH
+        self._highlight(cur_row)
+        self.table.resizeRowsToContents()
+
+    def _update_warn(self):
+        pass # 此面板不需要额外警告
+class AboutDialog(QDialog):
+=======
+        self._highlight(cur_row)
+        self.table.resizeRowsToContents()
+
+    def _highlight(self, row: int):
+        if row < 0:
+            return
+        for c in range(len(self.COLS)):
+            it = self.table.item(row, c)
+            if it is not None:
+                it.setBackground(QColor("#E6F1FB"))
+
+    def _update_warn(self):
+        pass # 此面板不需要额外警告
+class AboutDialog(QDialog):
+>>>>>>> REPLACE

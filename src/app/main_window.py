@@ -28,7 +28,7 @@ from core import version as version_mod
 
 from core.chainage import compute_chainage
 from .dialogs import (AboutDialog, BatchDialog, DisasterDialog,
-                      SettingsDialog, SlopeDialog, ZoneDialog, Hydro1DDialog,
+                      SettingsDialog, SlopeDialog, ZoneDialog, HydroLossDialog, Hydro1DDialog,
                       ExportOptionsDialog)
 from .param_panel import ParamPanel
 from .profile_view import ProfileView
@@ -164,6 +164,7 @@ class MainWindow(QMainWindow):
         # ---- 手动调节（Q14）：两个面板都不提供数值输入，靠图上拾取 ----
         self.dlg_zone = ZoneDialog(self)
         self.dlg_disaster = DisasterDialog(self)
+        self.dlg_hydro_loss = HydroLossDialog(self)
         self.dlg_about = AboutDialog(self)
         self.dlg_hydro1d = Hydro1DDialog(self)
         self.dlg_hydro1d.applied.connect(self._on_hydro1d_applied)
@@ -173,7 +174,7 @@ class MainWindow(QMainWindow):
         self.dlg_edit.edited.connect(self._on_section_edited)
         self.dlg_edit.notice.connect(self._on_section_edit_notice)
 
-        for d in (self.dlg_zone, self.dlg_disaster):
+        for d in (self.dlg_zone, self.dlg_disaster, self.dlg_hydro_loss):
             d.pickRequested.connect(self._on_manual_pick)
             d.clearRequested.connect(self._on_manual_cleared)
             d.resetGroupRequested.connect(self._on_manual_reset_group)
@@ -214,6 +215,10 @@ class MainWindow(QMainWindow):
             "手动指定成灾水位。只能在断面形态图上拾取实测测点；"
             "跟随左侧当前选中的断面。")
         act_disaster.triggered.connect(self._open_disaster_dialog)
+        act_hydro_loss = mb.addAction("局部损失系数")
+        act_hydro_loss.setToolTip(
+            "手动指定该断面的收缩系数和扩张系数。")
+        act_hydro_loss.triggered.connect(self._open_hydro_loss_dialog)
 
         m_help = mb.addMenu("帮助")
         act_about = m_help.addAction("关于…")
@@ -718,7 +723,7 @@ class MainWindow(QMainWindow):
                 self.results[sec.name] = res
                 self.infos[sec.name] = info
             # 断面都算完后，推算一维水面线
-            solve_profile_line(ln, self.results)
+            solve_profile_line(ln, self.cfg, self.results)
 
     def _recalc(self):
         if self.project is None:
@@ -797,6 +802,9 @@ class MainWindow(QMainWindow):
 
     def _open_disaster_dialog(self):
         self._open_manual_dialog(self.dlg_disaster)
+
+    def _open_hydro_loss_dialog(self):
+        self._open_manual_dialog(self.dlg_hydro_loss)
 
     def _open_about_dialog(self):
         """「关于」：不依赖工程是否已载入，随时可看自己跑的是哪一版。"""
@@ -900,7 +908,7 @@ class MainWindow(QMainWindow):
         """
         idx = max(self.lst_lines.currentRow(), 0)
         sec = self._current_section()
-        for d in (self.dlg_zone, self.dlg_disaster):
+        for d in (self.dlg_zone, self.dlg_disaster, self.dlg_hydro_loss):
             d.set_context(self.project, self.infos, self.results, self.cfg, idx)
             d.set_current(sec)
 

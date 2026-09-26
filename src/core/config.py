@@ -57,6 +57,10 @@ class Config:
     # 若下游平台不接受 BOM，可改 "utf-8"（无 BOM）或 "gbk"。
     csv_encoding: str = "utf-8-sig"
 
+    # ---------------- 水动力学参数 ----------------
+    kinetic_alpha_auto: bool = True     # 是否根据复式断面分区输水能力自动计算动能修正系数
+    kinetic_alpha: float = 1.0          # 动能修正系数固定值 (当 kinetic_alpha_auto 为 False 或单断面时使用)
+
     # ---------------- 图标码（Q3 确认：保持原样，不开放编辑）----------------
     ICON_FOUND: int = 156               # 找到水面交点
     ICON_NOT_FOUND: int = 172           # 未找到，退化为岸顶最高点

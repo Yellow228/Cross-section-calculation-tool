@@ -1,0 +1,13 @@
+<<<<<<< SEARCH
+from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+                               QPushButton, QTableWidget, QTableWidgetItem,
+                               QHeaderView, QComboBox, QGroupBox, QFormLayout,
+                               QMessageBox, QDoubleSpinBox, QCheckBox,
+                               QScrollArea, QAbstractItemView, QGridLayout)
+=======
+from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+                               QPushButton, QTableWidget, QTableWidgetItem,
+                               QHeaderView, QComboBox, QGroupBox, QFormLayout,
+                               QMessageBox, QDoubleSpinBox, QCheckBox,
+                               QScrollArea, QAbstractItemView, QGridLayout)
+>>>>>>> REPLACE

@@ -119,6 +119,10 @@ class Section:
     # 界面上无法还原、也无法再拾取回来的状态。
     disaster_idx_manual: Optional[int] = None
 
+    # ---- 手动局部水头损失系数（收缩/扩张）----
+    hydro_loss_contraction: Optional[float] = None  # 收缩系数 Cc，默认0.1
+    hydro_loss_expansion: Optional[float] = None    # 扩张系数 Ce，默认0.3
+
     @property
     def n_points(self) -> int:
         return len(self.z)
@@ -183,7 +187,9 @@ class Section:
     def has_manual(self) -> bool:
         """是否有任何人工覆盖。用于界面上标「手动」与工程文件瘦身。"""
         return (self.thalweg_manual is not None or self.zone_manual
-                or self.disaster_idx_manual is not None)
+                or self.disaster_idx_manual is not None
+                or self.hydro_loss_contraction is not None
+                or self.hydro_loss_expansion is not None)
 
     def duanmian_xy(self) -> str:
         """对应原 A.duanmianXY：'起点X,起点Y;终点X,终点Y'，三位小数"""
