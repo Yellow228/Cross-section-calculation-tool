@@ -35,6 +35,148 @@ from core import version as version_mod
 from .widgets import make_spin
 
 
+class Hydro1DDialog(QDialog):
+    """一维水动力推算设置面板。"""
+
+    applied = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("一维水面线推算")
+        self.project: Optional[Project] = None
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(3)
+        self.table.setHorizontalHeaderLabels(["纵断面线", "启用", "推算流态"])
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.verticalHeader().hide()
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+
+        btn_apply = QPushButton("开始推算")
+        btn_apply.clicked.connect(self._on_apply)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("勾选需要进行一维恒定流水面线推算的纵断面线："))
+        layout.addWidget(self.table)
+        layout.addWidget(btn_apply)
+
+        self.resize(500, 300)
+
+    def set_project(self, project: Project):
+        self.project = project
+        self.refresh()
+
+    def popup(self):
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def refresh(self):
+        if not self.project:
+            self.table.setRowCount(0)
+            return
+
+        lines = self.project.profile_lines
+        self.table.setRowCount(len(lines))
+
+        for i, ln in enumerate(lines):
+            # 名称
+            item_name = QTableWidgetItem(ln.name)
+            item_name.setFlags(item_name.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(i, 0, item_name)
+
+            # 启用复选框
+            chk = QCheckBox("启用一维推算")
+            chk.setChecked(ln.hydro1d_enabled)
+
+            # 使用一个包裹 widget 以居中显示
+            w = QWidget()
+            wl = QHBoxLayout(w)
+            wl.addWidget(chk)
+            wl.setAlignment(Qt.AlignCenter)
+            wl.setContentsMargins(0, 0, 0, 0)
+            self.table.setCellWidget(i, 1, w)
+            w.chk = chk  # 保存引用以便读取
+
+            # 流态下拉框
+            cmb = QComboBox()
+            cmb.addItems(["缓流 (Subcritical)", "急流 (Supercritical)", "混合流/自动判定 (Mixed/Auto)"])
+            # 映射到底层值
+            regimes = ["subcritical", "supercritical", "auto"]
+            try:
+                idx = regimes.index(ln.hydro1d_regime)
+            except ValueError:
+                idx = 0
+            cmb.setCurrentIndex(idx)
+            self.table.setCellWidget(i, 2, cmb)
+
+    def _on_apply(self):
+        if not self.project:
+            return
+
+        # 写回 project
+        lines = self.project.profile_lines
+        regimes = ["subcritical", "supercritical", "auto"]
+        for i, ln in enumerate(lines):
+            w = self.table.cellWidget(i, 1)
+            cmb = self.table.cellWidget(i, 2)
+            if w and hasattr(w, 'chk') and cmb:
+                ln.hydro1d_enabled = w.chk.isChecked()
+                ln.hydro1d_regime = regimes[cmb.currentIndex()]
+
+        self.applied.emit()
+        self.accept()
+
+
+class ExportOptionsDialog(QDialog):
+    """导出选项对话框，让用户选择要导出哪些 CSV 文件。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("选择导出选项")
+
+        self.options = {
+            'range_design': QCheckBox("设计水位淹没范围坐标.csv"),
+            'disaster': QCheckBox("成灾水位坐标.csv"),
+            'rating': QCheckBox("水位流量关系曲线.csv"),
+            'inundation': QCheckBox("淹没线坐标输出结果.csv (原MATLAB混合版)"),
+            'endpoint': QCheckBox("断面起终点坐标及水位.csv"),
+            'range_raised': QCheckBox("设计水位加高淹没范围坐标.csv"),
+            'hydro1d': QCheckBox("一维推算水面线.csv (仅已启用的线)"),
+            'hydro1d_range': QCheckBox("一维推算水面线淹没范围坐标.csv (仅已启用的线)"),
+        }
+
+        # 默认只勾选用户要求的三项
+        defaults = {'range_design', 'disaster', 'rating'}
+        for key, chk in self.options.items():
+            if key in defaults:
+                chk.setChecked(True)
+            else:
+                chk.setChecked(False)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("请勾选需要导出的文件类型："))
+
+        for chk in self.options.values():
+            layout.addWidget(chk)
+
+        btn_layout = QHBoxLayout()
+        btn_ok = QPushButton("确定并选择目录")
+        btn_ok.clicked.connect(self.accept)
+        btn_cancel = QPushButton("取消")
+        btn_cancel.clicked.connect(self.reject)
+
+        btn_layout.addStretch()
+        btn_layout.addWidget(btn_cancel)
+        btn_layout.addWidget(btn_ok)
+
+        layout.addLayout(btn_layout)
+
+    def get_options(self) -> dict[str, bool]:
+        return {key: chk.isChecked() for key, chk in self.options.items()}
+
+
 class SettingsDialog(QDialog):
     """计算设置：断面模式 / 水位步长 / 桩号原点 / 转折点阈值 / CSV 编码。
 

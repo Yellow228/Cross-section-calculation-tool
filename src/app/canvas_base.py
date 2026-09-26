@@ -22,6 +22,7 @@ COLOR_WATER = "#378ADD"      # 水面填充
 COLOR_DESIGN = "#185FA5"     # 设计水位
 COLOR_PLUS = "#0F6E56"       # 加高水位
 COLOR_DISASTER = "#A32D2D"   # 成灾水位
+COLOR_HYDRO1D = "#2CA02C"    # 一维推算水面线 (深绿色)
 COLOR_THALWEG = "#993C1D"    # 深泓点
 COLOR_PEAK = "#854F0B"       # 岸顶
 COLOR_TURN = "#534AB7"       # 转折点

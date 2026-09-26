@@ -23,12 +23,13 @@ from core.config import Config
 from core.exporter import export_all
 from core.model import Project, SectionResult, TerrainInfo
 from core.reader import load_folder
-from core.solver import solve_section
+from core.solver import solve_section, solve_profile_line
 from core import version as version_mod
 
 from core.chainage import compute_chainage
 from .dialogs import (AboutDialog, BatchDialog, DisasterDialog,
-                      SettingsDialog, SlopeDialog, ZoneDialog)
+                      SettingsDialog, SlopeDialog, ZoneDialog, Hydro1DDialog,
+                      ExportOptionsDialog)
 from .param_panel import ParamPanel
 from .profile_view import ProfileView
 from .rating_view import RatingView
@@ -164,6 +165,8 @@ class MainWindow(QMainWindow):
         self.dlg_zone = ZoneDialog(self)
         self.dlg_disaster = DisasterDialog(self)
         self.dlg_about = AboutDialog(self)
+        self.dlg_hydro1d = Hydro1DDialog(self)
+        self.dlg_hydro1d.applied.connect(self._on_hydro1d_applied)
 
         # ---- 横断面编辑（改测点高程 / 起点距 / 增删点）----
         self.dlg_edit = SectionEditorDialog(self)
@@ -198,6 +201,9 @@ class MainWindow(QMainWindow):
         act_slope = mb.addAction("按纵断面推算比降")
         act_slope.setToolTip("用纵断面实测数据推算各断面的河道平均比降（先出建议值再确认）")
         act_slope.triggered.connect(self._open_slope_dialog)
+        act_hydro1d = mb.addAction("一维水面线推算")
+        act_hydro1d.setToolTip("对所选的纵断面线执行一维恒定流水面线推算")
+        act_hydro1d.triggered.connect(self._open_hydro1d_dialog)
         act_zone = mb.addAction("分区调节")
         act_zone.setToolTip(
             "手动指定深泓点与分区边界。只能在断面形态图上拾取实测测点；"
@@ -706,10 +712,13 @@ class MainWindow(QMainWindow):
             return
         self.results.clear()
         self.infos.clear()
-        for sec in self.project.all_sections():
-            res, info = solve_section(sec, self.cfg)
-            self.results[sec.name] = res
-            self.infos[sec.name] = info
+        for ln in self.project.profile_lines:
+            for sec in ln.sections:
+                res, info = solve_section(sec, self.cfg)
+                self.results[sec.name] = res
+                self.infos[sec.name] = info
+            # 断面都算完后，推算一维水面线
+            solve_profile_line(ln, self.results)
 
     def _recalc(self):
         if self.project is None:
@@ -724,6 +733,20 @@ class MainWindow(QMainWindow):
         self._set_dirty()
 
     # ---------------- 比降推算 ----------------
+    def _open_hydro1d_dialog(self):
+        """打开一维水面线推算面板。"""
+        if self.project is None:
+            QMessageBox.information(self, "提示", "请先载入数据。")
+            return
+        self.dlg_hydro1d.set_project(self.project)
+        self.dlg_hydro1d.popup()
+
+    def _on_hydro1d_applied(self):
+        """一维水面线设置改变后触发重算"""
+        self._recalc()
+        self._set_dirty()
+        self.lbl_status.setText("一维水面线推算设置已更新并重算。")
+
     def _open_slope_dialog(self):
         """打开比降推算面板。先把当前工程喂进去再弹，否则表是空的。"""
         if self.project is None:
@@ -1134,13 +1157,26 @@ class MainWindow(QMainWindow):
         if self.project is None:
             QMessageBox.information(self, "提示", "请先载入数据。")
             return
+
+        # 先弹窗让用户选择要导出的文件种类
+        dlg = ExportOptionsDialog(self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+
+        options = dlg.get_options()
+
         out = QFileDialog.getExistingDirectory(self, "选择导出目录", self.cfg.output_dir)
         if not out:
             return
+
         try:
-            written = export_all(self.project, self.results, self.infos, self.cfg, out)
+            written = export_all(self.project, self.results, self.infos, self.cfg, out, options=options)
         except Exception as e:
             QMessageBox.critical(self, "导出失败", str(e))
             return
-        QMessageBox.information(self, "导出完成", f"已生成 {len(written)} 个文件：\n" +
-                                "\n".join(written))
+
+        if not written:
+            QMessageBox.information(self, "导出完成", "当前选择未生成任何文件。")
+        else:
+            QMessageBox.information(self, "导出完成", f"已生成 {len(written)} 个文件：\n" +
+                                    "\n".join(written))
