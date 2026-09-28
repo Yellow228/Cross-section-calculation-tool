@@ -46,7 +46,15 @@ FORMAT_ID = "duanmian-project"
 # v4：Config 新增 swap_xy_auto（坐标列序是否按数据自动判定，见 reader.detect_xy_order）。
 #     缺该字段的旧工程按「自动判定」处理（Config.from_dict 走非严格模式取默认值）；
 #     反向仍照例挡下：旧程序不认识这个字段，静默忽略会让人以为"设置没生效"。
-FORMAT_VERSION = 4
+# v5：内部坐标约定统一为**测量坐标系**（x=北、y=东），并新增导出坐标系选项。
+#     Config 删掉 swap_xy / swap_xy_auto，新增 first_col_is_north（导入兜底，界面无入口）
+#     与 export_coord_system（导出用，默认 "survey"）。
+#     ⚠ **v4 及更早的文件不做坐标迁移**（用户决定，见下）：那些文件里的 "x"/"y"
+#       是按旧的内部约定（x=东、y=北）写的，本版会当成（x=北、y=东）读，
+#       于是坐标关于 y=x 镜像 —— 几何与水位/流量结果不受影响（镜像是等距变换），
+#       但**导出的平面坐标两列会反**。这是刻意接受的取舍，不是漏写；
+#       要处理的话，重新载入一次原始数据即可（数据不该依赖工程文件快照）。
+FORMAT_VERSION = 5
 
 SUFFIX = ".dmprj"
 FILE_FILTER = "断面工程文件 (*.dmprj);;所有文件 (*)"

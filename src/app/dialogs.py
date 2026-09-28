@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                               QTabWidget, QVBoxLayout, QWidget, QDoubleSpinBox)
 
 from core.config import Config
+from core.exporter import COORD_SYSTEMS
 from core.model import Section
 from core.rating import hvec_row_counts
 from core.slope import MODE_LABELS, SLOPE_MODES, propose_slopes
@@ -178,30 +179,25 @@ class ExportOptionsDialog(QDialog):
 
 
 class SettingsDialog(QDialog):
-    """计算设置：断面模式 / 水位步长 / 桩号原点 / 转折点阈值 / 坐标列序 / CSV 编码。
+    """计算设置：断面模式 / 水位步长 / 桩号原点 / 转折点阈值 / 导出坐标系 / CSV 编码。
 
-    分四个信号：
+    分三个信号：
       - `changed`            任何计算项变化 -> 整体重算
       - `thresholdsChanged`  仅阈值变化 -> 重算并报出"影响了多少个断面"
-      - `exportChanged`      **仅导出项**变化 -> 不重算（编码只影响写文件）
-      - `coordChanged`       **仅坐标列序**变化 -> 必须**重新载入数据**
+      - `exportChanged`      **仅导出项**变化 -> 不重算（只影响写文件）
     分开是为了避免"改个编码把 30 个断面全重算一遍"这种无谓开销。
 
-    ⚠ 坐标列序 (swap_xy / swap_xy_auto) 是个例外：它决定的是"前两列谁是谁"，
-      在**解析阶段**就用掉了（reader._rows_to_arrays），改完重算没用，
-      必须把数据重新读一遍。所以它单独发一个信号、单独走重载路径。
+    ⚠ 这里**没有**「导入坐标列序」这一项：内部坐标一律是测量坐标系
+      （x=北、y=东），载入时自动判定输入前两列哪个是北，判不出来才弹窗问用户。
+      用户不需要、也不应该在设置里再表达一次。
     """
 
     changed = Signal()
     thresholdsChanged = Signal()
     exportChanged = Signal()
-    coordChanged = Signal()
 
     # 界面下拉项 -> Config.csv_encoding
     CSV_ENCODINGS = ["utf-8-sig", "utf-8", "gbk"]
-
-    # 坐标列序下拉项。索引 0 = 自动判定，1 = 第1列是北，2 = 第1列是东
-    XY_MODES = ["自动判定（推荐）", "第 1 列是北坐标", "第 1 列是东坐标"]
 
     def __init__(self, cfg: Config, parent=None):
         super().__init__(parent)
@@ -270,30 +266,6 @@ class SettingsDialog(QDialog):
         grp_raise = QGroupBox("加高水位（原 Hs+1）")
         grp_raise.setLayout(form_raise)
 
-        # ---- 坐标列序 ----
-        # 说的是"第 1 列是什么"，不是字母 X/Y —— 中国测量惯例 X=北、数学/CAD 习惯 X=东，
-        # "列头写 X坐标装北坐标"和"列头写 X坐标装东坐标"两种文件文字上完全一样。
-        # 所以默认交给自动判定（列头名 + 数值量级互证），并在判不出来时问用户。
-        self.cmb_xy = QComboBox()
-        self.cmb_xy.addItems(self.XY_MODES)
-        self.cmb_xy.setCurrentIndex(
-            0 if cfg.swap_xy_auto else (1 if cfg.swap_xy else 2))
-        self.cmb_xy.setToolTip(
-            "xlsx 前两列哪个是北坐标。程序内部固定按「x=东坐标、y=北坐标」计算，\n"
-            "这一项只决定从哪一列取 x、哪一列取 y。\n\n"
-            "「自动判定」：读列头文字，再用数值量级互证（北坐标约 2.0~6.0 百万，\n"
-            "    东坐标含带号约 10~46 百万、不含带号约 10 万~100 万）。\n"
-            "    量级是硬证据，所以判得比较稳；两层都判不出来时会弹窗问你。\n"
-            "「第 1 列是北坐标」：测量惯例（X=北、Y=东），也是原 xydiandao=1 的行为。\n"
-            "「第 1 列是东坐标」：前两列与上一种相反。\n\n"
-            "⚠ 改这一项会**重新载入数据**（列序在解析阶段就用掉了，重算没有用）。")
-        self.cmb_xy.currentIndexChanged.connect(lambda _: self.coordChanged.emit())
-
-        form_xy = QFormLayout()
-        form_xy.addRow("坐标列序", self.cmb_xy)
-        grp_xy = QGroupBox("坐标列序")
-        grp_xy.setLayout(form_xy)
-
         form = QFormLayout()
         form.addRow("断面模式", self.cmb_mode)
         form.addRow("水位步长 dH", self.spin_dh)
@@ -325,6 +297,24 @@ class SettingsDialog(QDialog):
         grp_hydro.setLayout(form_hydro)
 
         # ---- 导出设置 ----
+        # 导出坐标系：只影响写出去的 CSV 两列内容，不影响任何计算结果，
+        # 所以走 exportChanged（只同步配置、不重算）。
+        self.cmb_coord = QComboBox()
+        self.cmb_coord.addItems(list(COORD_SYSTEMS.values()))
+        self._coord_keys = list(COORD_SYSTEMS.keys())
+        self.cmb_coord.setCurrentIndex(
+            self._coord_keys.index(cfg.export_coord_system)
+            if cfg.export_coord_system in self._coord_keys else 0)
+        self.cmb_coord.setToolTip(
+            "导出 CSV 里「平面坐标X / 平面坐标Y」两列的坐标系。\n"
+            "**只影响导出的坐标两列，不影响任何计算结果**——\n"
+            "程序内部一律按测量坐标系（x=北、y=东）计算。\n\n"
+            "「测量坐标系」：X=北坐标（纵向）、Y=东坐标（横向）。与输入 xlsx 的\n"
+            "    列头含义一致（原始数据里「X坐标」列装的就是北坐标），默认选它。\n"
+            "「数学坐标系」：X=横轴（东向、横向）、Y=纵轴（北向、纵向）。\n"
+            "    给按数学习惯解析坐标的下游用。\n\n"
+            "⚠ 两档只差两列是否互换，下游按列序取值的脚本要跟着选对。")
+
         self.cmb_enc = QComboBox()
         self.cmb_enc.addItems([
             "UTF-8 带 BOM（Excel 推荐）",
@@ -343,8 +333,11 @@ class SettingsDialog(QDialog):
             "此选项只影响导出文件的写法，不触发重算。")
         self.cmb_enc.currentIndexChanged.connect(
             lambda _: self.exportChanged.emit())
+        self.cmb_coord.currentIndexChanged.connect(
+            lambda _: self.exportChanged.emit())
 
         form_out = QFormLayout()
+        form_out.addRow("导出坐标系", self.cmb_coord)
         form_out.addRow("CSV 编码", self.cmb_enc)
         grp_out = QGroupBox("导出")
         grp_out.setLayout(form_out)
@@ -362,7 +355,6 @@ class SettingsDialog(QDialog):
 
         lay = QVBoxLayout(self)
         lay.addWidget(grp_calc)
-        lay.addWidget(grp_xy)
         lay.addWidget(grp_raise)
         lay.addWidget(grp_hydro)
         lay.addWidget(grp_out)
@@ -387,11 +379,7 @@ class SettingsDialog(QDialog):
         cfg.csv_encoding = self.CSV_ENCODINGS[self.cmb_enc.currentIndex()]
         cfg.kinetic_alpha_auto = self.chk_alpha_auto.isChecked()
         cfg.kinetic_alpha = self.spin_alpha.value()
-        # 坐标列序：0=自动判定（交给数据），1/2=显式指定列序
-        idx_xy = self.cmb_xy.currentIndex()
-        cfg.swap_xy_auto = (idx_xy == 0)
-        if idx_xy != 0:
-            cfg.swap_xy = (idx_xy == 1)
+        cfg.export_coord_system = self._coord_keys[self.cmb_coord.currentIndex()]
 
     def sync_from(self, cfg: Config) -> None:
         """把配置的值刷到界面上（打开工程文件后必须做，否则界面与实际不符）。
@@ -402,7 +390,7 @@ class SettingsDialog(QDialog):
         widgets = (self.cmb_mode, self.spin_dh, self.cmb_origin,
                    self.spin_steep, self.spin_turn, self.chk_raise,
                    self.spin_raise, self.cmb_enc, self.chk_alpha_auto,
-                   self.spin_alpha, self.cmb_xy)
+                   self.spin_alpha, self.cmb_coord)
         for w in widgets:
             w.blockSignals(True)
         try:
@@ -419,8 +407,9 @@ class SettingsDialog(QDialog):
             self.cmb_enc.setCurrentIndex(idx)
             self.chk_alpha_auto.setChecked(cfg.kinetic_alpha_auto)
             self.spin_alpha.setValue(cfg.kinetic_alpha)
-            self.cmb_xy.setCurrentIndex(
-                0 if cfg.swap_xy_auto else (1 if cfg.swap_xy else 2))
+            self.cmb_coord.setCurrentIndex(
+                self._coord_keys.index(cfg.export_coord_system)
+                if cfg.export_coord_system in self._coord_keys else 0)
         finally:
             for w in widgets:
                 w.blockSignals(False)
@@ -433,19 +422,23 @@ class SettingsDialog(QDialog):
 
 
 class XYOrderDialog(QDialog):
-    """载入数据时无法自动判定坐标列序 -> 问用户一次。
+    """载入数据时无法自动判定输入列序 -> 问用户一次。
 
     什么时候弹：每个文件都跑"列头名 + 数值量级"两层判定，**只要有一个文件判不出来**
-    且当前是「自动判定」模式，就弹这个框。判得出来的时候不打扰。
+    就弹这个框。判得出来的时候不打扰。
 
-    默认勾选「写入工程设置」：选完就固化成显式指定（swap_xy_auto=False + swap_xy=…），
-    这样下次载入同一批数据不会再问一遍——否则"每次都判不出来"的文件会反复打断。
+    默认勾选「写入工程设置」：选完就把结论写进 `cfg.first_col_is_north`
+    （判不出来时的兜底值），下次载入同一批数据不会再问一遍——否则
+    "每次都判不出来"的文件会反复打断。
+
+    ⚠ 这是**唯一的人工兜底入口**：用户要求删掉了「计算设置 → 坐标列序」，
+      所以判不出来的数据只能在这里表达。别顺手把它也去掉。
     """
 
     def __init__(self, items, parent=None):
         """items: [(文件名, XYDecision), ...]，只应传入判不出来的那些。"""
         super().__init__(parent)
-        self.setWindowTitle("请确认坐标列序")
+        self.setWindowTitle("请确认输入文件的坐标列序")
         self.setMinimumWidth(520)
 
         lines = ["检测到以下文件无法自动判定「第 1 列是哪种坐标」：", ""]
@@ -472,10 +465,10 @@ class XYOrderDialog(QDialog):
         self.chk_save.setChecked(True)          # 默认写入：避免反复询问
 
         note = QLabel(
-            "说明：程序内部固定按「x = 东坐标、y = 北坐标」计算；"
-            "这一项只决定从哪一列取 x、哪一列取 y。\n"
-            "⚠ 选错不会影响水位/流量等计算结果，但**导出的平面坐标会 x/y 互换**"
-            "（拿进 CAD/GIS 会镜像）。")
+            "说明：程序内部一律按**测量坐标系**计算（x = 北坐标·纵向、"
+            "y = 东坐标·横向）；这一项只说明输入文件的前两列谁是谁。\n"
+            "⚠ 选错不会影响水位/流量等任何计算结果（只是把平面镜像一次），"
+            "但**导出的平面坐标两列会反**（拿进 CAD/GIS 会镜像）。")
         note.setWordWrap(True)
         note.setStyleSheet("color:#5F5E5A;")
 
@@ -496,7 +489,7 @@ class XYOrderDialog(QDialog):
         lay.addLayout(btn_row)
 
     def swap(self) -> bool:
-        """用户选的列序：True = 第 1 列是北坐标。"""
+        """用户选的列序：True = 输入的第 1 列是北坐标。"""
         return self.rdo_north.isChecked()
 
     def write_to_settings(self) -> bool:

@@ -25,7 +25,7 @@ from core.terrain import analyze_terrain
 from core.chainage import chainage_at_distance, compute_chainage, rebase_chainage
 from core.model import ProfileData, ProfileLine, Project
 from core.reader import (_dedupe_names, blocks_to_sections, classify,
-                         detect_xy_order, resolve_xy_order, split_blocks, XYDecision)
+                         detect_xy_order, split_blocks, XYDecision)
 from core.spatial import assign_by_intersection, find_intersection, segment_intersection
 from core import edit, exporter, params, project_io, slope, version
 
@@ -484,61 +484,50 @@ class TestExporter(unittest.TestCase):
             with open(p3, encoding="utf-8-sig") as f:
                 lines = f.read().strip().splitlines()
             self.assertEqual(lines[0], "名称,平面坐标[X+Y],百年一遇水位（m）")
-            # 列序是**测量惯例**（X=北、Y=东），与内部 x=东/y=北 相反，故为 y,x
-            self.assertIn('"100.000,500.000;165.000,565.000"', lines[1])
+            # 默认导出坐标系 = 测量坐标系，X/Y 就是内部的 x/y（x 是北），故不换
+            self.assertIn('"500.000,100.000;565.000,165.000"', lines[1])
 
-    def test_export_xy_follows_surveying_convention(self):
-        """导出坐标列序 = 测量惯例：平面坐标X 是**北**、平面坐标Y 是**东**。
+    def test_export_default_is_survey_system(self):
+        """默认导出坐标系 = 测量坐标系：X 写 sec.x（北）、Y 写 sec.y（东）。
 
-        与输入 xlsx 的列头含义一致（用户数据的「X坐标」列装北坐标）。
-        内部用的是数学惯例 x=东、y=北，所以导出时必须经 `exporter.out_xy()` 交换一次。
-
-        这条是**行为契约**，不是实现细节：改错了不会报错，只会让导出坐标
-        关于 y=x 镜像、与输入文件对不上。所以三个写坐标的入口都要钉住。
+        内部恒为测量坐标系，所以这一档是"原样写出"；`math` 档才交换。
+        三个写坐标的入口都要钉住——改错了不会报错，只会让坐标悄悄镜像。
         """
         import tempfile
         sec = make_compound_section()
-        cfg = Config()
+        cfg = Config()                     # 默认 export_coord_system = "survey"
+        self.assertEqual(cfg.export_coord_system, "survey")
         res, info = solve_section(sec, cfg)
-        # 前提：这个断面的 y 明显区别于 x（100/165 vs 500/565），否则测不出交换
-        self.assertNotEqual(sec.x[0], sec.y[0])
+        self.assertNotEqual(sec.x[0], sec.y[0])   # 前提：两轴数值可区分
 
         with tempfile.TemporaryDirectory() as td:
             p1 = os.path.join(td, "inund.csv")
             exporter.export_inundation_csv(p1, [sec], [res], [info], cfg)
-            rows = [l for l in open(p1, encoding="utf-8-sig").read().strip().splitlines()]
-            head = rows[0].split(",")
-            self.assertEqual(head[1:3], ["平面坐标X", "平面坐标Y"])
+            rows = open(p1, encoding="utf-8-sig").read().strip().splitlines()
+            self.assertEqual(rows[0].split(",")[1:3],
+                             ["平面坐标X", "平面坐标Y"])
 
-            # 成灾水位行：第 2 列必须是 y（北）、第 3 列必须是 x（东）
             i_d = info.disaster_idx
             dis = [r for r in rows if "成灾水位" in r]
             if dis:
                 got = dis[0].split(",")
-                self.assertAlmostEqual(float(got[1]), sec.y[i_d], places=6)
-                self.assertAlmostEqual(float(got[2]), sec.x[i_d], places=6)
+                self.assertAlmostEqual(float(got[1]), sec.x[i_d], places=6)
+                self.assertAlmostEqual(float(got[2]), sec.y[i_d], places=6)
 
-            # 淹没交点行：同样 第2列=y、第3列=x
             zrow = [r for r in rows if r.startswith(f"{sec.name}Z")]
             if zrow and res.left_point is not None:
                 got = zrow[0].split(",")
-                self.assertAlmostEqual(float(got[1]), res.left_point[1], places=6)
-                self.assertAlmostEqual(float(got[2]), res.left_point[0], places=6)
+                self.assertAlmostEqual(float(got[1]), res.left_point[0], places=6)
+                self.assertAlmostEqual(float(got[2]), res.left_point[1], places=6)
 
-            # 起终点坐标串：X 用 y、Y 用 x
             p3 = os.path.join(td, "endpoint.csv")
-            exporter.export_endpoint_csv(p3, [sec], [res])
-            body = open(p3, encoding="utf-8-sig").read().strip().splitlines()[1]
-            pair = body.split('"')[1]
-            start, end = pair.split(";")
-            self.assertAlmostEqual(float(start.split(",")[0]), sec.y[0], places=3)
-            self.assertAlmostEqual(float(start.split(",")[1]), sec.x[0], places=3)
-            self.assertAlmostEqual(float(end.split(",")[0]), sec.y[-1], places=3)
-            self.assertAlmostEqual(float(end.split(",")[1]), sec.x[-1], places=3)
-
-    def test_out_xy_is_swapped(self):
-        """`out_xy` 本身：传入内部 (x=东, y=北)，返回 (X=北, Y=东)。"""
-        self.assertEqual(exporter.out_xy(500.0, 100.0), (100.0, 500.0))
+            exporter.export_endpoint_csv(p3, [sec], [res],
+                                         coord_system=cfg.export_coord_system)
+            pair = open(p3, encoding="utf-8-sig").read().strip().splitlines()[1].split('"')[1]
+            for chunk, (px, py) in zip(pair.split(";"), ((sec.x[0], sec.y[0]),
+                                                         (sec.x[-1], sec.y[-1]))):
+                self.assertAlmostEqual(float(chunk.split(",")[0]), px, places=3)
+                self.assertAlmostEqual(float(chunk.split(",")[1]), py, places=3)
 
     def test_csv_has_utf8_bom(self):
         """回归：中文 Windows 的 Excel 按 ANSI(GBK) 解 CSV，无 BOM 就全乱码。
@@ -668,11 +657,11 @@ class TestExporter(unittest.TestCase):
         self.assertEqual(rows[0], "名称,平面坐标X,平面坐标Y,图标样式")
         self.assertEqual(len(rows), 3)
         # A 用 idx=1 -> x=1,y=1（两者相等，看不出列序）
-        # B 用 idx=3 -> x=103,y=203；导出按测量惯例，故写出「北,东」=「203,103」
+        # B 用 idx=3 -> x=103（北）,y=203（东）；默认测量坐标系下直接写 x,y
         self.assertTrue(rows[1].startswith("A成灾水位"))
         self.assertIn("1.000000,1.000000", rows[1])
         self.assertTrue(rows[2].startswith("B成灾水位"))
-        self.assertIn("203.000000,103.000000", rows[2])
+        self.assertIn("103.000000,203.000000", rows[2])
 
     def test_export_all_writes_six_files(self):
         """每条纵断面线现在输出 6 个文件（原 3 个 + 新增 3 个）。
@@ -785,11 +774,17 @@ class TestBlockSplit(unittest.TestCase):
         self.assertEqual(parsed.profiles[0].dist, [0.0, 50.0, 90.0])
         self.assertEqual(parsed.profiles[0].z, [100.0, 95.0, 90.0])
 
-    def test_swap_xy(self):
-        """swap_xy=True 时 X 取第 2 列、Y 取第 1 列"""
-        cfg = Config(swap_xy=True)
-        blocks = split_blocks(make_raw_two_blocks(), cfg)
-        secs = blocks_to_sections(blocks, cfg).sections
+    def test_first_col_is_north_maps_x_to_col1(self):
+        """first_col_is_north=True -> x 取第 1 列（北）、y 取第 2 列（东）。"""
+        cfg = Config(first_col_is_north=True)
+        secs = blocks_to_sections(split_blocks(make_raw_two_blocks(), cfg), cfg).sections
+        self.assertEqual(secs[0].x, [1.0, 1.0])
+        self.assertEqual(secs[0].y, [2.0, 2.0])
+
+    def test_first_col_is_east_maps_x_to_col2(self):
+        """first_col_is_north=False -> x 仍取**北**那列（此时在北在第 2 列）。"""
+        cfg = Config(first_col_is_north=False)
+        secs = blocks_to_sections(split_blocks(make_raw_two_blocks(), cfg), cfg).sections
         self.assertEqual(secs[0].x, [2.0, 2.0])
         self.assertEqual(secs[0].y, [1.0, 1.0])
 
@@ -896,14 +891,14 @@ class TestXYOrder(unittest.TestCase):
         return split_blocks(raw, Config())
 
     def _detect(self, header, rows, **kw):
-        return detect_xy_order(self._blocks(header, rows, **kw), Config())
+        return detect_xy_order(self._blocks(header, rows, **kw))
 
     # ---------------- 层 1：列头名 ----------------
 
     def test_header_strong_north(self):
         """列头写「北坐标/东坐标」-> 第 1 列是北。"""
         d = self._detect(["北坐标", "东坐标", "起点距", "高程"], self.ROWS_NORTH)
-        self.assertTrue(d.swap)
+        self.assertTrue(d.first_is_north)
         self.assertTrue(d.confident)
         self.assertFalse(d.conflict)
         self.assertIn("列头", d.source)
@@ -911,7 +906,7 @@ class TestXYOrder(unittest.TestCase):
     def test_header_strong_east(self):
         """列头写「东坐标/北坐标」-> 第 1 列是东。"""
         d = self._detect(["东坐标", "北坐标", "起点距", "高程"], self.ROWS_EAST)
-        self.assertFalse(d.swap)
+        self.assertFalse(d.first_is_north)
         self.assertTrue(d.confident)
 
     def test_bare_xy_is_not_evidence(self):
@@ -920,7 +915,7 @@ class TestXYOrder(unittest.TestCase):
         这正是用户遇到的情况——"有些 X、Y 坐标本来就是对的，无需颠倒"。
         """
         d = self._detect(["X坐标", "Y坐标", "起点距", "高程"], self.ROWS_EAST)
-        self.assertFalse(d.swap)
+        self.assertFalse(d.first_is_north)
         self.assertTrue(d.confident)
         self.assertEqual(d.source, "量级")
 
@@ -928,14 +923,14 @@ class TestXYOrder(unittest.TestCase):
 
     def test_magnitude_north_first(self):
         d = self._detect(["X坐标", "Y坐标", "起点距", "高程"], self.ROWS_NORTH)
-        self.assertTrue(d.swap)
+        self.assertTrue(d.first_is_north)
         self.assertEqual(d.source, "量级")
 
     def test_magnitude_north_only(self):
         """第 2 列不在任何已知量级区间，只要第 1 列命中北坐标区间即可定论。"""
         rows = [[r[0], 7.5, r[2], r[3]] for r in self.ROWS_NORTH]
         d = self._detect(["X坐标", "Y坐标", "起点距", "高程"], rows)
-        self.assertTrue(d.swap)
+        self.assertTrue(d.first_is_north)
         self.assertTrue(d.confident)
 
     def test_east_with_zone_prefix(self):
@@ -943,7 +938,7 @@ class TestXYOrder(unittest.TestCase):
         rows = [[34500000.0 + i, 3325293.71 + i, i * 5.0, 745.4 - i]
                 for i in range(4)]
         d = self._detect(["X坐标", "Y坐标", "起点距", "高程"], rows)
-        self.assertFalse(d.swap)
+        self.assertFalse(d.first_is_north)
         self.assertTrue(d.confident)
 
     def test_east_plain_alone_is_not_enough(self):
@@ -958,7 +953,7 @@ class TestXYOrder(unittest.TestCase):
     def test_magnitude_beats_wrong_header(self):
         """列头与量级矛盾 -> 按量级（硬证据），并标矛盾。"""
         d = self._detect(["东坐标", "北坐标", "起点距", "高程"], self.ROWS_NORTH)
-        self.assertTrue(d.swap)         # 数据是北在前
+        self.assertTrue(d.first_is_north)         # 数据是北在前
         self.assertEqual(d.source, "量级")
         self.assertTrue(d.conflict)
         self.assertIn("不一致", d.note)
@@ -988,42 +983,99 @@ class TestXYOrder(unittest.TestCase):
         """没有列头行时不会误判：reader 按约定跳过标题行下一行，
         剩下的样本不足 -> 报"判不出来"，而不是随便给个结论。"""
         raw = [["断面编号", "A-1"]] + [list(r) for r in self.ROWS_NORTH]
-        d = detect_xy_order(split_blocks(raw, Config()), Config())
+        d = detect_xy_order(split_blocks(raw, Config()))
         self.assertFalse(d.confident)
 
-    # ---------------- 自动 / 显式指定 ----------------
+    # ---------------- 内部坐标系：x 恒为北 ----------------
 
-    def test_auto_mode_uses_detection(self):
-        """自动判定模式：数据说了算。"""
-        cfg = Config(swap_xy=True, swap_xy_auto=True)
-        detected = XYDecision(False, True, "量级", "第 1 列=东坐标")
-        swap, dec = resolve_xy_order(cfg, detected)
-        self.assertFalse(swap)
-        self.assertIs(dec, detected)
+    def test_undetermined_leaves_it_to_ui(self):
+        """判不出来时 first_is_north=None 且 confident=False ——
+        界面据此弹窗问用户（这是删掉「计算设置 → 坐标列序」后唯一的人工兜底）。"""
+        rows = [[10.0 + i, 20.0 + i, i * 5.0, 100.0 - i] for i in range(4)]
+        d = self._detect(["X坐标", "Y坐标", "起点距", "高程"], rows)
+        self.assertIsNone(d.first_is_north)
+        self.assertFalse(d.confident)
 
-    def test_manual_mode_wins(self):
-        """显式指定模式：你说了算，判定只用来提醒、不覆盖。"""
-        cfg = Config(swap_xy=True, swap_xy_auto=False)
-        detected = XYDecision(False, True, "量级", "第 1 列=东坐标")
-        swap, dec = resolve_xy_order(cfg, detected)
-        self.assertTrue(swap)           # 仍按设置取「第 1 列是北」
-        self.assertTrue(dec.conflict)    # 但给出矛盾提醒
-        self.assertEqual(dec.source, "设置")
+    def test_internal_x_is_always_north(self):
+        """**内部一律是测量坐标系**：不管输入前两列谁在前，`x` 都是北、`y` 都是东。
 
-    def test_manual_mode_without_conflict(self):
-        """显式指定且与数据一致 -> 不报矛盾。"""
-        cfg = Config(swap_xy=True, swap_xy_auto=False)
-        swap, dec = resolve_xy_order(cfg, XYDecision(True, True, "量级", "第 1 列=北坐标"))
-        self.assertTrue(swap)
-        self.assertFalse(dec.conflict)
+        这条是本次改造的核心契约：读入时按判定结果把"北列"映射到 x。
+        """
+        for first_is_north, rows in ((True, self.ROWS_NORTH), (False, self.ROWS_EAST)):
+            cfg = Config(first_col_is_north=first_is_north)
+            secs = blocks_to_sections(
+                self._blocks(["X坐标", "Y坐标", "起点距", "高程"], rows), cfg).sections
+            north = [r[0] if first_is_north else r[1] for r in rows]
+            east = [r[1] if first_is_north else r[0] for r in rows]
+            self.assertEqual(secs[0].x, north, f"first_col_is_north={first_is_north}")
+            self.assertEqual(secs[0].y, east, f"first_col_is_north={first_is_north}")
 
-    def test_auto_mode_falls_back_when_undetermined(self):
-        """自动模式但判不出来 -> 用 swap_xy 兜底，且保持 confident=False 以便界面提问。"""
-        cfg = Config(swap_xy=True, swap_xy_auto=True)
-        detected = XYDecision(True, False, "未判定", "无法自动判定坐标列序")
-        swap, dec = resolve_xy_order(cfg, detected)
-        self.assertTrue(swap)
-        self.assertFalse(dec.confident)
+    def test_two_input_orders_give_identical_geometry(self):
+        """同一批点做成"北在前"与"东在前"两份数据 -> 读进来后 x/y **完全相同**。
+
+        几何量与水力结果因此不可能受影响，这也正是"内部统一坐标系"的意义。
+        """
+        hdr = ["X坐标", "Y坐标", "起点距", "高程"]
+        a = blocks_to_sections(self._blocks(hdr, self.ROWS_NORTH),
+                               Config(first_col_is_north=True)).sections[0]
+        b = blocks_to_sections(self._blocks(hdr, self.ROWS_EAST),
+                               Config(first_col_is_north=False)).sections[0]
+        self.assertEqual(a.x, b.x)
+        self.assertEqual(a.y, b.y)
+        self.assertEqual(a.s, b.s)
+        self.assertEqual(a.z, b.z)
+
+
+class TestExportCoordSystem(unittest.TestCase):
+    """导出坐标系：只影响写出去的两列内容，不影响任何计算结果。
+
+    内部恒为测量坐标系（x=北、y=东）；导出按 `cfg.export_coord_system`：
+      survey（默认）-> 原样；math -> 交换。
+    """
+
+    def test_out_xy_survey_is_identity(self):
+        self.assertEqual(exporter.out_xy(500.0, 100.0, "survey"), (500.0, 100.0))
+        self.assertEqual(exporter.out_xy(500.0, 100.0), (500.0, 100.0))   # 默认档
+
+    def test_out_xy_math_swaps(self):
+        self.assertEqual(exporter.out_xy(500.0, 100.0, "math"), (100.0, 500.0))
+
+    def test_csv_two_columns_follow_setting(self):
+        """同一份数据换导出坐标系 -> 只有两列内容互换，行数/名称/图标都不变。"""
+        import tempfile
+        sec = make_compound_section()
+        res, info = solve_section(sec, Config())
+
+        def write(system):
+            cfg = Config(export_coord_system=system)
+            with tempfile.TemporaryDirectory() as td:
+                p = os.path.join(td, "inund.csv")
+                exporter.export_inundation_csv(p, [sec], [res], [info], cfg)
+                with open(p, encoding="utf-8-sig") as f:
+                    return f.read().strip().splitlines()
+
+        survey = write("survey")
+        math = write("math")
+        self.assertEqual(survey[0], math[0])          # 列名不变
+        self.assertEqual(len(survey), len(math))
+        for ls, lm in zip(survey[1:], math[1:]):
+            a, b = ls.split(","), lm.split(",")
+            self.assertEqual(a[0], b[0])              # 名称不变
+            self.assertEqual(a[3], b[3])              # 图标样式不变
+            self.assertEqual(a[1], b[2])              # X/Y 互换
+            self.assertEqual(a[2], b[1])
+
+    def test_endpoint_str_follows_setting(self):
+        sec = make_compound_section()
+        s = exporter.endpoint_xy_str(sec, "survey")
+        m = exporter.endpoint_xy_str(sec, "math")
+        # survey: 起点X=sec.x[0], 起点Y=sec.y[0]
+        self.assertEqual(s.split(";")[0], f"{sec.x[0]:.3f},{sec.y[0]:.3f}")
+        self.assertEqual(m.split(";")[0], f"{sec.y[0]:.3f},{sec.x[0]:.3f}")
+
+    def test_coord_system_keys_are_complete(self):
+        """界面文案表的键必须与允许的取值一致（防呆：改名后忘了改界面）。"""
+        self.assertEqual(set(exporter.COORD_SYSTEMS), {"survey", "math"})
 
 
 class TestChainageOrigin(unittest.TestCase):

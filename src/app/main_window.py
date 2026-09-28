@@ -20,7 +20,7 @@ from core import params as P
 from core import project_io
 from core import slope as slope_mod
 from core.config import Config
-from core.exporter import export_all
+from core.exporter import COORD_SYSTEMS, export_all
 from core.model import Project, SectionResult, TerrainInfo
 from core.reader import load_folder
 from core.solver import solve_section, solve_profile_line
@@ -156,8 +156,6 @@ class MainWindow(QMainWindow):
         self.dlg_settings.changed.connect(self._on_settings_changed)
         self.dlg_settings.thresholdsChanged.connect(self._on_thresholds_changed)
         self.dlg_settings.exportChanged.connect(self._on_export_settings_changed)
-        # 坐标列序在**解析阶段**就用掉了，改完重算没用 -> 单独走重载路径
-        self.dlg_settings.coordChanged.connect(self._on_coord_changed)
         self.dlg_batch.applyRequested.connect(self._apply_batch_from_dialog)
         self.dlg_batch.groupChanged.connect(self._on_batch_group_changed)
         self.dlg_batch.zoneChanged.connect(self._on_batch_zone_changed)
@@ -465,6 +463,14 @@ class MainWindow(QMainWindow):
         if miss:
             msg += (f"　⚠ 其中 {len(miss)} 个断面的参数为空，"
                     f"请用「批量填写」补齐后重新保存。")
+        # v5 起内部坐标约定翻转为测量坐标系（x=北、y=东）。
+        # 老工程文件里的 x/y 是按旧约定（x=东、y=北）写的，且**不做迁移**
+        # （用户决定）：几何与水力结果不受影响（镜像是等距变换），
+        # 但导出的平面坐标两列会反。这里只说一句，不擅自改数据。
+        if meta and meta.get("version", 0) < 5:
+            msg += ("　⚠ 该工程保存于旧格式（v%d），坐标按旧约定存储——"
+                    "导出坐标的两列可能相反；如需准确坐标请重新载入原始数据。"
+                    % meta.get("version", 0))
         self.lbl_status.setText(msg)
 
     def _new_project(self):
@@ -535,39 +541,20 @@ class MainWindow(QMainWindow):
         self._set_dirty()          # 计算设置是工程数据的一部分
 
     def _on_export_settings_changed(self):
-        """导出项（CSV 编码）变化：只同步配置，**不重算**。
+        """导出项（坐标系 / CSV 编码）变化：只同步配置，**不重算**。
 
-        编码只影响写文件的字节，与几何/水力计算无关，
+        这两项都只影响写文件的字节，与几何/水力计算无关，
         重算 30 个断面纯属浪费，还会让状态栏冒出莫名其妙的"已重算"。
         """
         self._sync_cfg()
         show = {"utf-8-sig": "UTF-8 带 BOM", "utf-8": "UTF-8 无 BOM", "gbk": "GBK"}
+        coord = COORD_SYSTEMS.get(self.cfg.export_coord_system,
+                                 self.cfg.export_coord_system)
         self.lbl_status.setText(
-            f"导出编码已改为 {show.get(self.cfg.csv_encoding, self.cfg.csv_encoding)}，"
+            f"导出设置已更新：坐标系＝{coord}，"
+            f"CSV 编码＝{show.get(self.cfg.csv_encoding, self.cfg.csv_encoding)}，"
             f"下次导出即生效（无需重算）。")
         self._set_dirty()
-
-    def _on_coord_changed(self):
-        """坐标列序变化：**必须重新载入数据**，光重算没用。
-
-        它决定的是"前两列谁是谁"，在 reader 的解析阶段就用掉了；
-        只调 `_recalc()` 不会重新读文件，图上的坐标还是旧的。
-        （与「桩号原点」当时那个 bug 是同一类，所以这里显式重载。）
-
-        与「载入时的坐标列序确认框」行为一致：两者写的是同一组设置
-        （`swap_xy_auto` / `swap_xy`），生效方式也都是重新载入一遍数据。
-        """
-        self._sync_cfg()
-        if self.project is None:
-            self.lbl_status.setText("坐标列序已记录，下次载入数据时生效。")
-            self._set_dirty()
-            return
-        if not self._maybe_save():          # 重载会丢掉未保存的编辑，先问一句
-            self.dlg_settings.sync_from(self.cfg)   # 取消 -> 界面回滚成实际配置
-            return
-        self._load()
-        self.lbl_status.setText(
-            f"坐标列序已更改，已重新载入数据。{getattr(self, '_xy_note', '')}")
 
     def _on_thresholds_changed(self):
         """仅阈值变化时的提示：突出受影响的断面数。"""
@@ -695,30 +682,33 @@ class MainWindow(QMainWindow):
         return {"dir": self.data_dir, "files": files}
 
     def _xy_summary(self, xy_report) -> str:
-        """把各文件的坐标列序判定汇总成状态栏的一句话。
+        """把各文件的输入列序判定汇总成状态栏的一句话。
 
-        目录内不一致要**明确说出来**：那种情况下导出的平面坐标必然有一部分是错的，
+        内部一律是测量坐标系，所以这里报的是"输入文件的前两列谁是谁"。
+        目录内不一致要**明确说出来**：那种情况下必然有文件被当成了另一种列序读，
         静默按某一个值跑完全程是最坏的结果。
         """
         if not xy_report:
             return ""
-        swaps = {d.swap for _fn, d in xy_report}
-        if len(swaps) > 1:
-            detail = "、".join(f"{fn}(第1列{'北' if d.swap else '东'})"
-                              for fn, d in xy_report)
+        orders = {d.first_is_north for _fn, d in xy_report if d.first_is_north is not None}
+        if len(orders) > 1:
+            detail = "、".join(
+                f"{fn}(第1列{'北' if d.first_is_north else '东'})"
+                for fn, d in xy_report if d.first_is_north is not None)
             return ("　⚠ 目录内文件的坐标列序不一致：" + detail +
-                    "。导出的平面坐标会有一半是错的，请先统一数据格式。")
+                    "。必然有文件被读成了错误的列序，请先统一数据格式。")
         d = xy_report[0][1]
-        tag = "自动判定" if self.cfg.swap_xy_auto else "按设置"
         if d.confident:
-            return f"　坐标列序（{tag}）：{d.describe()}。"
-        return f"　坐标列序未确定，暂按「{d.describe()}」。"
+            return f"　坐标列序（自动判定）：{d.describe()}。"
+        return (f"　⚠ 坐标列序未能自动判定，暂按「输入第 1 列是"
+                f"{'北' if d.first_is_north else '东'}坐标」读取。")
 
     def _load(self, xy_override: bool | None = None):
         """载入数据目录。
 
-        xy_override：直接指定列序（True=第 1 列是北坐标），跳过自动判定。
-        用于"用户刚在坐标列序确认框里选过"的那一次重读，避免问了又判、判了又问。
+        内部一律按**测量坐标系**（x=北、y=东）读取，与输入前两列的顺序无关。
+        xy_override：直接指定"输入的第 1 列是不是北坐标"，跳过自动判定；
+        用于"用户刚在列序确认框里选过"的那一次重读，避免问了又判、判了又问。
         """
         self._sync_cfg()
         xy_report: list = []
@@ -730,26 +720,23 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "载入失败", f"{e}\n\n{traceback.format_exc()}")
             return
 
-        # 有个文件判不出列序，且当前是"自动判定"模式 -> 先问一句再往下做，
-        # 免得把一堆重活干完又得推倒重来。
-        ask = [(fn, d) for fn, d in xy_report
-               if not d.confident and self.cfg.swap_xy_auto]
+        # 有文件判不出列序 -> 先问一句再往下做，免得把一堆重活干完又得推倒重来。
+        # 这是删掉「计算设置 → 坐标列序」之后唯一的人工兜底入口。
+        ask = [(fn, d) for fn, d in xy_report if not d.confident]
         if ask and xy_override is None and not getattr(self, "_xy_asking", False):
             self._xy_asking = True
             try:
                 dlg = XYOrderDialog(ask, self)
                 accepted = dlg.exec() == QDialog.Accepted
-                swap, write = (dlg.swap(), dlg.write_to_settings()) if accepted \
+                choice, write = (dlg.swap(), dlg.write_to_settings()) if accepted \
                     else (None, False)
             finally:
                 self._xy_asking = False
             if accepted:
                 if write:
-                    # 固化：下次载入同一批数据不再问（与设置面板是同一组字段）
-                    self.cfg.swap_xy_auto = False
-                    self.cfg.swap_xy = swap
-                    self.dlg_settings.sync_from(self.cfg)
-                self._load(xy_override=swap)
+                    # 固化兜底值：下次载入同一批数据不再问（这项没有界面入口）
+                    self.cfg.first_col_is_north = choice
+                self._load(xy_override=choice)
                 return
 
         self.project = project

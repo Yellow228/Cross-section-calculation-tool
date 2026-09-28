@@ -150,8 +150,16 @@ def split_blocks(raw: list[list], cfg: Config) -> list[Block]:
 
 def _rows_to_arrays(rows: list[list], cfg: Config
                     ) -> tuple[list[float], list[float], list[float], list[float]]:
-    """把数据行转成 x, y, s, z 四列，跳过非数值行。"""
+    """把数据行转成 x, y, s, z 四列，跳过非数值行。
+
+    **x = 北坐标（纵向）、y = 东坐标（横向）** —— 内部的测量坐标系约定。
+    输入文件前两列的物理含义由 `cfg.first_col_is_north` 决定（载入前已由
+    `detect_xy_order` 判定好），所以这里只做"哪一列进 x"的映射，
+    与输入文件的前两列顺序无关。
+    """
     xs, ys, ss, zs = [], [], [], []
+    n_col = 0 if cfg.first_col_is_north else 1      # 北坐标所在列
+    e_col = 1 - n_col                              # 东坐标所在列
     for row in rows:
         if len(row) < 4:
             continue
@@ -159,10 +167,8 @@ def _rows_to_arrays(rows: list[list], cfg: Config
         z_v = _to_float(row[3])
         if s_v is None or z_v is None:
             continue
-        if cfg.swap_xy:
-            x_v, y_v = _to_float(row[1]), _to_float(row[0])
-        else:
-            x_v, y_v = _to_float(row[0]), _to_float(row[1])
+        x_v = _to_float(row[n_col])                # x = 北
+        y_v = _to_float(row[e_col])                # y = 东
         if x_v is None or y_v is None:
             continue
         xs.append(x_v); ys.append(y_v); ss.append(s_v); zs.append(z_v)
@@ -276,8 +282,9 @@ def group_into_profile_lines(sections: list[Section],
 # =====================================================================
 # X/Y 列序判定（详见 DESIGN.md §4.8）
 # =====================================================================
-# 要判定的其实只有一句话：**第 1 列是北坐标还是东坐标**。
-# 内部约定固定 x=东、y=北，所以判出来直接就是 cfg.swap_xy 的取值。
+# 要判定的其实只有一句话：**输入的第 1 列是北坐标还是东坐标**。
+# 判出来之后，北列进 x、东列进 y —— 内部一律是测量坐标系（x=北、y=东），
+# 与输入文件的列序无关（见 config.Config.first_col_is_north 的说明）。
 #
 # 只用两层证据，都不做几何推断：
 #   层 1 列头名：强信号（含「北/纵/N」「东/横/E」等）可定论。
@@ -305,16 +312,23 @@ _XY_MAX_SAMPLE = 50      # 每块取样行数上限
 
 @dataclass
 class XYDecision:
-    """一个文件的 X/Y 列序判定结果。"""
-    swap: bool                  # 结论：True = 第 1 列是北坐标（等价 cfg.swap_xy=True）
+    """一个文件的 X/Y 列序判定结果。
+
+    `first_is_north` 说的就是"输入文件的第 1 列是不是北坐标"。
+    判不出来时为 None，由调用方套 `Config.first_col_is_north` 兜底。
+    """
+    first_is_north: Optional[bool]   # None = 判不出来
     confident: bool             # 能否定论；False 时界面应当询问用户
-    source: str                 # 依据：列头+量级 / 量级 / 列头 / 设置 / 指定 / 未判定
+    source: str                 # 依据：列头+量级 / 量级 / 列头 / 指定 / 未判定
     note: str                   # 一行说明（含证据），用于状态栏与日志
     conflict: bool = False      # 证据之间矛盾（列头 vs 量级、块与块之间）
 
     def describe(self) -> str:
-        """人间可读的一句话，如「第 1 列=北坐标（列头+量级）」。"""
-        return f"第 1 列={'北' if self.swap else '东'}坐标（{self.source}）"
+        """人间可读的一句话，如「输入第 1 列=北坐标（列头+量级）」。"""
+        if self.first_is_north is None:
+            return f"输入列序未确定（{self.source}）"
+        return (f"输入第 1 列={'北' if self.first_is_north else '东'}坐标"
+                f"（{self.source}）")
 
 
 def _looks_like_header(cells: list) -> bool:
@@ -415,8 +429,12 @@ def _aggregate(orders: list[bool]) -> tuple[Optional[bool], bool]:
     return None, True               # 块与块之间不一致
 
 
-def detect_xy_order(blocks: list[Block], cfg: Config) -> XYDecision:
-    """判定「第 1 列是北坐标还是东坐标」。只做列头名与数值量级两层。"""
+def detect_xy_order(blocks: list[Block]) -> XYDecision:
+    """判定「输入的第 1 列是北坐标还是东坐标」。只做列头名与数值量级两层。
+
+    判不出来时 `first_is_north=None`、`confident=False`，由调用方套
+    `Config.first_col_is_north` 兜底，并由界面弹窗问用户。
+    """
     # ---- 层 1：列头 ----
     h_orders: list[bool] = []
     h_conflict = False
@@ -445,72 +463,59 @@ def detect_xy_order(blocks: list[Block], cfg: Config) -> XYDecision:
     # ---- 合并 ----
     if h_order is not None and m_order is not None and h_order == m_order:
         return XYDecision(m_order, True, "列头+量级",
-                          f"第 1 列={'北' if m_order else '东'}坐标"
+                          f"输入第 1 列={'北' if m_order else '东'}坐标"
                           f"（列头与数值量级一致{'；' + m_detail[0] if m_detail else ''}）",
                           conflict=ambiguous)
     if m_order is not None:
         # 量级是硬证据（区间互不重叠），列头文字可能是前人填错的 -> 量级优先
-        n = (f"第 1 列={'北' if m_order else '东'}坐标（按数值量级判定"
+        n = (f"输入第 1 列={'北' if m_order else '东'}坐标（按数值量级判定"
              f"{'：' + m_detail[0] if m_detail else ''}）")
         if h_order is not None:
             n += "；⚠ 列头文字与数值量级不一致，已按量级处理"
         return XYDecision(m_order, True, "量级", n, conflict=ambiguous or h_order is not None)
     if h_order is not None:
         return XYDecision(h_order, True, "列头",
-                          f"第 1 列={'北' if h_order else '东'}坐标（按列头文字判定）",
+                          f"输入第 1 列={'北' if h_order else '东'}坐标（按列头文字判定）",
                           conflict=ambiguous)
     # 都没判出来
     why = "列头与数值量级互相矛盾" if ambiguous else "列头未明示、数值也不在可判定的量级区间"
-    return XYDecision(cfg.swap_xy, False, "未判定",
-                      f"无法自动判定坐标列序（{why}），暂按当前设置："
-                      f"第 1 列是{'北' if cfg.swap_xy else '东'}坐标",
-                      conflict=ambiguous)
-
-
-def resolve_xy_order(cfg: Config, detected: XYDecision) -> tuple[bool, XYDecision]:
-    """把「自动判定 / 显式指定」的语义落成一个确定的列序。返回 (swap, 采用的决定)。
-
-    两种模式的边界说清楚，界面上的两个入口（计算设置里的下拉、载入时的确认框）
-    都收敛到这里，行为才一致：
-
-      * `swap_xy_auto=True` —— **数据说了算**：采用判定结论；判不出来时
-        采用 `swap_xy` 兜底，并由界面弹窗问用户（detected.confident=False 即信号）。
-      * `swap_xy_auto=False` —— **你说了算**：一律用 `swap_xy`，判定只用来提醒；
-        若判定明确且与设置相反，记一条矛盾告警，但**不覆盖**你的选择。
-    """
-    if cfg.swap_xy_auto:
-        return detected.swap, detected
-
-    swap = cfg.swap_xy
-    if detected.confident and detected.swap != swap:
-        return swap, XYDecision(
-            swap, True, "设置",
-            f"列序由设置指定：第 1 列是{'北' if swap else '东'}坐标；"
-            f"⚠ 但数据看起来是第 1 列{'北' if detected.swap else '东'}坐标"
-            f"（依据：{detected.source}）——如不符请到「计算设置 → 坐标列序」修改",
-            conflict=True)
-    return swap, XYDecision(
-        swap, True, "设置", f"列序由设置指定：第 1 列是{'北' if swap else '东'}坐标")
+    return XYDecision(None, False, "未判定",
+                      f"无法自动判定输入列序（{why}）", conflict=ambiguous)
 
 
 def load_file(path: str, cfg: Config, sheet_name: Optional[str] = None,
               xy_override: Optional[bool] = None) -> ParsedBlocks:
     """载入单个文件。一个文件可能含多个「纵断面」块，全部保留。
 
-    xy_override 给定时直接用它决定列序（用于用户刚在确认框里选过的这一次载入），
-    不再做判定，避免"问了又判、判了又问"的死循环。
+    内部一律是测量坐标系（x=北、y=东），所以这里只判定"输入第 1 列是不是北"，
+    再把北列放进 x —— 与输入文件的前两列顺序无关。
+
+    xy_override 给定时直接采用它（=输入第 1 列是否北坐标），不再做判定。
+    用于用户刚在确认框里选过的这一次载入，避免"问了又判、判了又问"的死循环。
     """
     raw = read_sheet_rows(path, sheet_name)
     blocks = split_blocks(raw, cfg)
 
     if xy_override is not None:
-        swap = bool(xy_override)
-        decision = XYDecision(swap, True, "指定",
-                              f"按你的选择读取：第 1 列是{'北' if swap else '东'}坐标")
+        first_north = bool(xy_override)
+        decision = XYDecision(first_north, True, "指定",
+                              f"按你的选择读取：输入第 1 列是"
+                              f"{'北' if first_north else '东'}坐标")
     else:
-        swap, decision = resolve_xy_order(cfg, detect_xy_order(blocks, cfg))
+        detected = detect_xy_order(blocks)
+        if detected.confident:
+            first_north, decision = detected.first_is_north, detected
+        else:
+            # 判不出来 -> 用工程里的兜底值，并保持 confident=False，
+            # 界面据此弹窗问用户（core 不认识界面，只负责把信号带上去）
+            first_north = cfg.first_col_is_north
+            decision = XYDecision(
+                first_north, False, "未判定",
+                f"{detected.note}；暂按当前设置：输入第 1 列是"
+                f"{'北' if first_north else '东'}坐标",
+                conflict=detected.conflict)
 
-    parsed = blocks_to_sections(blocks, replace(cfg, swap_xy=swap))
+    parsed = blocks_to_sections(blocks, replace(cfg, first_col_is_north=first_north))
     parsed.xy = decision
     return parsed
 
