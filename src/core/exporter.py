@@ -1,6 +1,11 @@
 """结果导出。CSV 部分仅用标准库；xlsx 部分惰性导入 openpyxl。
 
-输出格式完全沿用原 MATLAB（文件名、列名、小数位数），保证下游流程无需改动。
+输出格式沿用原 MATLAB（文件名、列名、小数位数），保证下游流程无需改动。
+
+⚠ **导出坐标的列序**（改动前务必读 `out_xy()` 的说明）：
+  内部一律是数学惯例 `x=东、y=北`，导出的 CSV 一律是**测量惯例 `X=北、Y=东`**，
+  与输入 xlsx 的列头含义一致。所有写坐标的地方都必须经过 `out_xy()`，
+  否则导出坐标会和输入文件对不上（表现为关于 y=x 镜像）。
 
 ⚠ 待回归验证点：
   断面起终点坐标及水位.csv 的"百年一遇水位"一列，MATLAB 用 fprintf('%s', 数值)，
@@ -34,12 +39,41 @@ def matlab_num2str(v: float) -> str:
     return f"{v:.4f}"
 
 
+def out_xy(x: float, y: float) -> tuple[float, float]:
+    """内部坐标 -> 导出坐标：**（x=东, y=北）->（X=北, Y=东）**。
+
+    ⚠ 这里必须交换一次，别按"内部是什么就写什么"改回去。
+
+    内部代码（`Section.x/y`、`interpolate_xy`、水面交点）一律用**数学惯例**
+    `x = 东坐标、y = 北坐标`；而导出的 CSV 沿用**中国测量惯例**
+    `X = 北坐标、Y = 东坐标` —— 与输入 xlsx 的列头含义一致
+    （用户的数据就是「X坐标」列装北坐标、「Y坐标」列装东坐标）。
+
+    两侧都要一致才不出错：输入按测量惯例标注 -> `reader` 读进来时换一次
+    （见 `reader.detect_xy_order`）-> 内部用数学惯例算 -> 导出时再换回去。
+    少任何一次，导出的坐标就和输入对不上（表现为关于 y=x 镜像）。
+    """
+    return y, x
+
+
+def endpoint_xy_str(sec: Section) -> str:
+    """断面起终点平面坐标串：'起点北,起点东;终点北,终点东'，三位小数。
+
+    对应原 MATLAB `A.duanmianXY`，格式与列名沿用原程序。
+    """
+    x1, y1 = out_xy(sec.x[0], sec.y[0])
+    x2, y2 = out_xy(sec.x[-1], sec.y[-1])
+    return f"{x1:.3f},{y1:.3f};{x2:.3f},{y2:.3f}"
+
+
 def _write_xy_rows(w, sec: Section, lp, ls, rp, rs) -> None:
     """写一个断面的左岸(Z)、右岸(Y)两条淹没交点记录。"""
     if lp is not None:
-        w.writerow([f"{sec.name}Z", f"{lp[0]:.6f}", f"{lp[1]:.6f}", ls])
+        ox, oy = out_xy(lp[0], lp[1])
+        w.writerow([f"{sec.name}Z", f"{ox:.6f}", f"{oy:.6f}", ls])
     if rp is not None:
-        w.writerow([f"{sec.name}Y", f"{rp[0]:.6f}", f"{rp[1]:.6f}", rs])
+        ox, oy = out_xy(rp[0], rp[1])
+        w.writerow([f"{sec.name}Y", f"{ox:.6f}", f"{oy:.6f}", rs])
 
 
 def _disaster_row(sec: Section, res: SectionResult, info: TerrainInfo, cfg: Config):
@@ -53,10 +87,8 @@ def _disaster_row(sec: Section, res: SectionResult, info: TerrainInfo, cfg: Conf
         return None
     label = (f"{sec.name}成灾水位:{matlab_num2str(info.disaster_level)}"
              f"成灾流量:{matlab_num2str(res.disaster_flow)}")
-    return [label,
-            f"{sec.x[info.disaster_idx]:.6f}",
-            f"{sec.y[info.disaster_idx]:.6f}",
-            cfg.ICON_DISASTER]
+    ox, oy = out_xy(sec.x[info.disaster_idx], sec.y[info.disaster_idx])
+    return [label, f"{ox:.6f}", f"{oy:.6f}", cfg.ICON_DISASTER]
 
 
 def export_inundation_csv(path: str, sections: list[Section],
@@ -131,8 +163,8 @@ def export_endpoint_csv(path: str, sections: list[Section],
     with open(path, "w", encoding=encoding, newline="") as f:
         f.write("名称,平面坐标[X+Y],百年一遇水位（m）\n")
         for sec, res in zip(sections, results):
-            xy = sec.duanmian_xy()
-            f.write(f'{sec.name},"{xy}",{matlab_num2str(res.design_level)}\n')
+            f.write(f'{sec.name},"{endpoint_xy_str(sec)}",'
+                    f'{matlab_num2str(res.design_level)}\n')
 
 
 def export_hydro1d_csv(path: str, line: ProfileLine, results: list[SectionResult], encoding: str = "utf-8-sig") -> None:
@@ -168,14 +200,16 @@ def export_hydro1d_range_csv(path: str, line: ProfileLine, cfg: Config) -> None:
             if edge_l:
                 i1, i2 = edge_l
                 px, py = interpolate_xy(sec.x, sec.y, z, i1, i2, h)
-                w.writerow([f"{sec.name}Z", f"{px:.6f}", f"{py:.6f}", cfg.ICON_FOUND])
+                ox, oy = out_xy(px, py)
+                w.writerow([f"{sec.name}Z", f"{ox:.6f}", f"{oy:.6f}", cfg.ICON_FOUND])
 
             # 右岸
             edge_r = find_water_edge(z, h, dmin_idx, "right")
             if edge_r:
                 i1, i2 = edge_r
                 px, py = interpolate_xy(sec.x, sec.y, z, i1, i2, h)
-                w.writerow([f"{sec.name}Y", f"{px:.6f}", f"{py:.6f}", cfg.ICON_FOUND])
+                ox, oy = out_xy(px, py)
+                w.writerow([f"{sec.name}Y", f"{ox:.6f}", f"{oy:.6f}", cfg.ICON_FOUND])
 
 
 def export_section_names_xlsx(path: str, names: list[str]) -> None:

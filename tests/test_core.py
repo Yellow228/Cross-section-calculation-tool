@@ -484,7 +484,61 @@ class TestExporter(unittest.TestCase):
             with open(p3, encoding="utf-8-sig") as f:
                 lines = f.read().strip().splitlines()
             self.assertEqual(lines[0], "名称,平面坐标[X+Y],百年一遇水位（m）")
-            self.assertIn('"500.000,100.000;565.000,165.000"', lines[1])
+            # 列序是**测量惯例**（X=北、Y=东），与内部 x=东/y=北 相反，故为 y,x
+            self.assertIn('"100.000,500.000;165.000,565.000"', lines[1])
+
+    def test_export_xy_follows_surveying_convention(self):
+        """导出坐标列序 = 测量惯例：平面坐标X 是**北**、平面坐标Y 是**东**。
+
+        与输入 xlsx 的列头含义一致（用户数据的「X坐标」列装北坐标）。
+        内部用的是数学惯例 x=东、y=北，所以导出时必须经 `exporter.out_xy()` 交换一次。
+
+        这条是**行为契约**，不是实现细节：改错了不会报错，只会让导出坐标
+        关于 y=x 镜像、与输入文件对不上。所以三个写坐标的入口都要钉住。
+        """
+        import tempfile
+        sec = make_compound_section()
+        cfg = Config()
+        res, info = solve_section(sec, cfg)
+        # 前提：这个断面的 y 明显区别于 x（100/165 vs 500/565），否则测不出交换
+        self.assertNotEqual(sec.x[0], sec.y[0])
+
+        with tempfile.TemporaryDirectory() as td:
+            p1 = os.path.join(td, "inund.csv")
+            exporter.export_inundation_csv(p1, [sec], [res], [info], cfg)
+            rows = [l for l in open(p1, encoding="utf-8-sig").read().strip().splitlines()]
+            head = rows[0].split(",")
+            self.assertEqual(head[1:3], ["平面坐标X", "平面坐标Y"])
+
+            # 成灾水位行：第 2 列必须是 y（北）、第 3 列必须是 x（东）
+            i_d = info.disaster_idx
+            dis = [r for r in rows if "成灾水位" in r]
+            if dis:
+                got = dis[0].split(",")
+                self.assertAlmostEqual(float(got[1]), sec.y[i_d], places=6)
+                self.assertAlmostEqual(float(got[2]), sec.x[i_d], places=6)
+
+            # 淹没交点行：同样 第2列=y、第3列=x
+            zrow = [r for r in rows if r.startswith(f"{sec.name}Z")]
+            if zrow and res.left_point is not None:
+                got = zrow[0].split(",")
+                self.assertAlmostEqual(float(got[1]), res.left_point[1], places=6)
+                self.assertAlmostEqual(float(got[2]), res.left_point[0], places=6)
+
+            # 起终点坐标串：X 用 y、Y 用 x
+            p3 = os.path.join(td, "endpoint.csv")
+            exporter.export_endpoint_csv(p3, [sec], [res])
+            body = open(p3, encoding="utf-8-sig").read().strip().splitlines()[1]
+            pair = body.split('"')[1]
+            start, end = pair.split(";")
+            self.assertAlmostEqual(float(start.split(",")[0]), sec.y[0], places=3)
+            self.assertAlmostEqual(float(start.split(",")[1]), sec.x[0], places=3)
+            self.assertAlmostEqual(float(end.split(",")[0]), sec.y[-1], places=3)
+            self.assertAlmostEqual(float(end.split(",")[1]), sec.x[-1], places=3)
+
+    def test_out_xy_is_swapped(self):
+        """`out_xy` 本身：传入内部 (x=东, y=北)，返回 (X=北, Y=东)。"""
+        self.assertEqual(exporter.out_xy(500.0, 100.0), (100.0, 500.0))
 
     def test_csv_has_utf8_bom(self):
         """回归：中文 Windows 的 Excel 按 ANSI(GBK) 解 CSV，无 BOM 就全乱码。
@@ -613,11 +667,12 @@ class TestExporter(unittest.TestCase):
 
         self.assertEqual(rows[0], "名称,平面坐标X,平面坐标Y,图标样式")
         self.assertEqual(len(rows), 3)
-        # A 用 idx=1 -> (1,1)；B 用 idx=3 -> (103,203)
+        # A 用 idx=1 -> x=1,y=1（两者相等，看不出列序）
+        # B 用 idx=3 -> x=103,y=203；导出按测量惯例，故写出「北,东」=「203,103」
         self.assertTrue(rows[1].startswith("A成灾水位"))
         self.assertIn("1.000000,1.000000", rows[1])
         self.assertTrue(rows[2].startswith("B成灾水位"))
-        self.assertIn("103.000000,203.000000", rows[2])
+        self.assertIn("203.000000,103.000000", rows[2])
 
     def test_export_all_writes_six_files(self):
         """每条纵断面线现在输出 6 个文件（原 3 个 + 新增 3 个）。

@@ -191,10 +191,6 @@ class Section:
                 or self.hydro_loss_contraction is not None
                 or self.hydro_loss_expansion is not None)
 
-    def duanmian_xy(self) -> str:
-        """对应原 A.duanmianXY：'起点X,起点Y;终点X,终点Y'，三位小数"""
-        return f"{self.x[0]:.3f},{self.y[0]:.3f};{self.x[-1]:.3f},{self.y[-1]:.3f}"
-
     def validate(self, check_params: bool = True) -> list[str]:
         """返回问题描述列表；空列表表示通过。对应缺陷 D6。
 
