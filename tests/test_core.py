@@ -25,7 +25,7 @@ from core.terrain import analyze_terrain
 from core.chainage import chainage_at_distance, compute_chainage, rebase_chainage
 from core.model import ProfileData, ProfileLine, Project
 from core.reader import (_dedupe_names, blocks_to_sections, classify,
-                         split_blocks)
+                         detect_xy_order, resolve_xy_order, split_blocks, XYDecision)
 from core.spatial import assign_by_intersection, find_intersection, segment_intersection
 from core import edit, exporter, params, project_io, slope, version
 
@@ -809,6 +809,166 @@ class TestBlockSplit(unittest.TestCase):
         """同名纵断面线加 -段N 后缀，避免下拉框里分不清"""
         out = _dedupe_names(["secA", "secB", "secA", "secA"])
         self.assertEqual(out, ["secA-段1", "secB", "secA-段2", "secA-段3"])
+
+
+class TestXYOrder(unittest.TestCase):
+    """导入时自动判定 X/Y 列序（列头名 + 数值量级互证）。
+
+    核心事实：**互换前两列 = 平面关于 y=x 镜像**，距离与相交关系全部保持，
+    所以判错不影响水位/流量等任何计算结果，只让**导出的平面坐标** x/y 互换。
+    判定要解决的就是后者。
+
+    另一条必须记住的：**裸 X / Y 不构成证据**——中国测量惯例 X=北，
+    而数学/CAD 习惯 X 常指东，两种文件在文字层面完全一样。
+    """
+
+    #: 北坐标 3325293、东坐标 576949（真实数据的量级）
+    ROWS_NORTH = [[3325293.71, 576949.407, 0, 745.4],
+                  [3325282.846, 576967.079, 20.7, 744.9],
+                  [3325272.000, 576980.000, 40.0, 744.1]]
+    #: 同一批点，但东坐标在前
+    ROWS_EAST = [[r[1], r[0], r[2], r[3]] for r in ROWS_NORTH]
+
+    def _blocks(self, header, rows, nblocks=1, rows2=None):
+        raw = []
+        for k in range(nblocks):
+            fname = f"A-{k + 1}"
+            rr = rows if (k == 0 or rows2 is None) else rows2
+            raw.append(["断面编号", fname])
+            if header:
+                raw.append(list(header))
+            raw += [list(r) for r in rr]
+        return split_blocks(raw, Config())
+
+    def _detect(self, header, rows, **kw):
+        return detect_xy_order(self._blocks(header, rows, **kw), Config())
+
+    # ---------------- 层 1：列头名 ----------------
+
+    def test_header_strong_north(self):
+        """列头写「北坐标/东坐标」-> 第 1 列是北。"""
+        d = self._detect(["北坐标", "东坐标", "起点距", "高程"], self.ROWS_NORTH)
+        self.assertTrue(d.swap)
+        self.assertTrue(d.confident)
+        self.assertFalse(d.conflict)
+        self.assertIn("列头", d.source)
+
+    def test_header_strong_east(self):
+        """列头写「东坐标/北坐标」-> 第 1 列是东。"""
+        d = self._detect(["东坐标", "北坐标", "起点距", "高程"], self.ROWS_EAST)
+        self.assertFalse(d.swap)
+        self.assertTrue(d.confident)
+
+    def test_bare_xy_is_not_evidence(self):
+        """裸 X / Y 不算强信号：东坐标在前、列头仍写 X/Y 时，必须按量级判出东在前。
+
+        这正是用户遇到的情况——"有些 X、Y 坐标本来就是对的，无需颠倒"。
+        """
+        d = self._detect(["X坐标", "Y坐标", "起点距", "高程"], self.ROWS_EAST)
+        self.assertFalse(d.swap)
+        self.assertTrue(d.confident)
+        self.assertEqual(d.source, "量级")
+
+    # ---------------- 层 2：数值量级 ----------------
+
+    def test_magnitude_north_first(self):
+        d = self._detect(["X坐标", "Y坐标", "起点距", "高程"], self.ROWS_NORTH)
+        self.assertTrue(d.swap)
+        self.assertEqual(d.source, "量级")
+
+    def test_magnitude_north_only(self):
+        """第 2 列不在任何已知量级区间，只要第 1 列命中北坐标区间即可定论。"""
+        rows = [[r[0], 7.5, r[2], r[3]] for r in self.ROWS_NORTH]
+        d = self._detect(["X坐标", "Y坐标", "起点距", "高程"], rows)
+        self.assertTrue(d.swap)
+        self.assertTrue(d.confident)
+
+    def test_east_with_zone_prefix(self):
+        """含带号的东坐标（8 位，如 34500000）单独即可定论为「第 1 列是东」。"""
+        rows = [[34500000.0 + i, 3325293.71 + i, i * 5.0, 745.4 - i]
+                for i in range(4)]
+        d = self._detect(["X坐标", "Y坐标", "起点距", "高程"], rows)
+        self.assertFalse(d.swap)
+        self.assertTrue(d.confident)
+
+    def test_east_plain_alone_is_not_enough(self):
+        """不含带号的东坐标（约 5.0e5）排他性弱，单独一列不足以定论。"""
+        rows = [[500000.0 + i, 7.5, i * 5.0, 745.4 - i] for i in range(4)]
+        d = self._detect(["X坐标", "Y坐标", "起点距", "高程"], rows)
+        self.assertFalse(d.confident)
+        self.assertIn("无法自动判定", d.note)
+
+    # ---------------- 合并与冲突 ----------------
+
+    def test_magnitude_beats_wrong_header(self):
+        """列头与量级矛盾 -> 按量级（硬证据），并标矛盾。"""
+        d = self._detect(["东坐标", "北坐标", "起点距", "高程"], self.ROWS_NORTH)
+        self.assertTrue(d.swap)         # 数据是北在前
+        self.assertEqual(d.source, "量级")
+        self.assertTrue(d.conflict)
+        self.assertIn("不一致", d.note)
+
+    def test_header_self_contradiction(self):
+        """两列列头都指同一边 -> 列头作废，交给量级，并标矛盾。"""
+        d = self._detect(["北坐标", "北边", "起点距", "高程"], self.ROWS_NORTH)
+        self.assertTrue(d.confident)     # 量级能救回来
+        self.assertTrue(d.conflict)
+
+    def test_local_coordinates_undetermined(self):
+        """局部/施工坐标：两列都是小数值 -> 判不出来，必须交由用户确认。"""
+        rows = [[10.0 + i, 20.0 + i, i * 5.0, 100.0 - i] for i in range(4)]
+        d = self._detect(["X坐标", "Y坐标", "起点距", "高程"], rows)
+        self.assertFalse(d.confident)
+        self.assertEqual(d.source, "未判定")
+        self.assertIn("无法自动判定", d.note)
+
+    def test_blocks_disagree(self):
+        """同一个文件内两块列序相反 -> 判不出来且标矛盾，不静默选一个。"""
+        d = self._detect(["X坐标", "Y坐标", "起点距", "高程"], self.ROWS_NORTH,
+                         nblocks=2, rows2=self.ROWS_EAST)
+        self.assertFalse(d.confident)
+        self.assertTrue(d.conflict)
+
+    def test_no_header_row(self):
+        """没有列头行时不会误判：reader 按约定跳过标题行下一行，
+        剩下的样本不足 -> 报"判不出来"，而不是随便给个结论。"""
+        raw = [["断面编号", "A-1"]] + [list(r) for r in self.ROWS_NORTH]
+        d = detect_xy_order(split_blocks(raw, Config()), Config())
+        self.assertFalse(d.confident)
+
+    # ---------------- 自动 / 显式指定 ----------------
+
+    def test_auto_mode_uses_detection(self):
+        """自动判定模式：数据说了算。"""
+        cfg = Config(swap_xy=True, swap_xy_auto=True)
+        detected = XYDecision(False, True, "量级", "第 1 列=东坐标")
+        swap, dec = resolve_xy_order(cfg, detected)
+        self.assertFalse(swap)
+        self.assertIs(dec, detected)
+
+    def test_manual_mode_wins(self):
+        """显式指定模式：你说了算，判定只用来提醒、不覆盖。"""
+        cfg = Config(swap_xy=True, swap_xy_auto=False)
+        detected = XYDecision(False, True, "量级", "第 1 列=东坐标")
+        swap, dec = resolve_xy_order(cfg, detected)
+        self.assertTrue(swap)           # 仍按设置取「第 1 列是北」
+        self.assertTrue(dec.conflict)    # 但给出矛盾提醒
+        self.assertEqual(dec.source, "设置")
+
+    def test_manual_mode_without_conflict(self):
+        """显式指定且与数据一致 -> 不报矛盾。"""
+        cfg = Config(swap_xy=True, swap_xy_auto=False)
+        swap, dec = resolve_xy_order(cfg, XYDecision(True, True, "量级", "第 1 列=北坐标"))
+        self.assertTrue(swap)
+        self.assertFalse(dec.conflict)
+
+    def test_auto_mode_falls_back_when_undetermined(self):
+        """自动模式但判不出来 -> 用 swap_xy 兜底，且保持 confident=False 以便界面提问。"""
+        cfg = Config(swap_xy=True, swap_xy_auto=True)
+        detected = XYDecision(True, False, "未判定", "无法自动判定坐标列序")
+        swap, dec = resolve_xy_order(cfg, detected)
+        self.assertTrue(swap)
+        self.assertFalse(dec.confident)
 
 
 class TestChainageOrigin(unittest.TestCase):

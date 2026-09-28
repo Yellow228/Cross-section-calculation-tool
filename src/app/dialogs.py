@@ -178,21 +178,30 @@ class ExportOptionsDialog(QDialog):
 
 
 class SettingsDialog(QDialog):
-    """计算设置：断面模式 / 水位步长 / 桩号原点 / 转折点阈值 / CSV 编码。
+    """计算设置：断面模式 / 水位步长 / 桩号原点 / 转折点阈值 / 坐标列序 / CSV 编码。
 
-    分三个信号：
+    分四个信号：
       - `changed`            任何计算项变化 -> 整体重算
       - `thresholdsChanged`  仅阈值变化 -> 重算并报出"影响了多少个断面"
       - `exportChanged`      **仅导出项**变化 -> 不重算（编码只影响写文件）
-    三者分开是为了避免"改个编码把 30 个断面全重算一遍"这种无谓开销。
+      - `coordChanged`       **仅坐标列序**变化 -> 必须**重新载入数据**
+    分开是为了避免"改个编码把 30 个断面全重算一遍"这种无谓开销。
+
+    ⚠ 坐标列序 (swap_xy / swap_xy_auto) 是个例外：它决定的是"前两列谁是谁"，
+      在**解析阶段**就用掉了（reader._rows_to_arrays），改完重算没用，
+      必须把数据重新读一遍。所以它单独发一个信号、单独走重载路径。
     """
 
     changed = Signal()
     thresholdsChanged = Signal()
     exportChanged = Signal()
+    coordChanged = Signal()
 
     # 界面下拉项 -> Config.csv_encoding
     CSV_ENCODINGS = ["utf-8-sig", "utf-8", "gbk"]
+
+    # 坐标列序下拉项。索引 0 = 自动判定，1 = 第1列是北，2 = 第1列是东
+    XY_MODES = ["自动判定（推荐）", "第 1 列是北坐标", "第 1 列是东坐标"]
 
     def __init__(self, cfg: Config, parent=None):
         super().__init__(parent)
@@ -260,6 +269,30 @@ class SettingsDialog(QDialog):
         form_raise.addRow("加高幅度 (m)", self.spin_raise)
         grp_raise = QGroupBox("加高水位（原 Hs+1）")
         grp_raise.setLayout(form_raise)
+
+        # ---- 坐标列序 ----
+        # 说的是"第 1 列是什么"，不是字母 X/Y —— 中国测量惯例 X=北、数学/CAD 习惯 X=东，
+        # "列头写 X坐标装北坐标"和"列头写 X坐标装东坐标"两种文件文字上完全一样。
+        # 所以默认交给自动判定（列头名 + 数值量级互证），并在判不出来时问用户。
+        self.cmb_xy = QComboBox()
+        self.cmb_xy.addItems(self.XY_MODES)
+        self.cmb_xy.setCurrentIndex(
+            0 if cfg.swap_xy_auto else (1 if cfg.swap_xy else 2))
+        self.cmb_xy.setToolTip(
+            "xlsx 前两列哪个是北坐标。程序内部固定按「x=东坐标、y=北坐标」计算，\n"
+            "这一项只决定从哪一列取 x、哪一列取 y。\n\n"
+            "「自动判定」：读列头文字，再用数值量级互证（北坐标约 2.0~6.0 百万，\n"
+            "    东坐标含带号约 10~46 百万、不含带号约 10 万~100 万）。\n"
+            "    量级是硬证据，所以判得比较稳；两层都判不出来时会弹窗问你。\n"
+            "「第 1 列是北坐标」：测量惯例（X=北、Y=东），也是原 xydiandao=1 的行为。\n"
+            "「第 1 列是东坐标」：前两列与上一种相反。\n\n"
+            "⚠ 改这一项会**重新载入数据**（列序在解析阶段就用掉了，重算没有用）。")
+        self.cmb_xy.currentIndexChanged.connect(lambda _: self.coordChanged.emit())
+
+        form_xy = QFormLayout()
+        form_xy.addRow("坐标列序", self.cmb_xy)
+        grp_xy = QGroupBox("坐标列序")
+        grp_xy.setLayout(form_xy)
 
         form = QFormLayout()
         form.addRow("断面模式", self.cmb_mode)
@@ -329,6 +362,7 @@ class SettingsDialog(QDialog):
 
         lay = QVBoxLayout(self)
         lay.addWidget(grp_calc)
+        lay.addWidget(grp_xy)
         lay.addWidget(grp_raise)
         lay.addWidget(grp_hydro)
         lay.addWidget(grp_out)
@@ -353,6 +387,11 @@ class SettingsDialog(QDialog):
         cfg.csv_encoding = self.CSV_ENCODINGS[self.cmb_enc.currentIndex()]
         cfg.kinetic_alpha_auto = self.chk_alpha_auto.isChecked()
         cfg.kinetic_alpha = self.spin_alpha.value()
+        # 坐标列序：0=自动判定（交给数据），1/2=显式指定列序
+        idx_xy = self.cmb_xy.currentIndex()
+        cfg.swap_xy_auto = (idx_xy == 0)
+        if idx_xy != 0:
+            cfg.swap_xy = (idx_xy == 1)
 
     def sync_from(self, cfg: Config) -> None:
         """把配置的值刷到界面上（打开工程文件后必须做，否则界面与实际不符）。
@@ -362,7 +401,8 @@ class SettingsDialog(QDialog):
         """
         widgets = (self.cmb_mode, self.spin_dh, self.cmb_origin,
                    self.spin_steep, self.spin_turn, self.chk_raise,
-                   self.spin_raise, self.cmb_enc, self.chk_alpha_auto, self.spin_alpha)
+                   self.spin_raise, self.cmb_enc, self.chk_alpha_auto,
+                   self.spin_alpha, self.cmb_xy)
         for w in widgets:
             w.blockSignals(True)
         try:
@@ -379,6 +419,8 @@ class SettingsDialog(QDialog):
             self.cmb_enc.setCurrentIndex(idx)
             self.chk_alpha_auto.setChecked(cfg.kinetic_alpha_auto)
             self.spin_alpha.setValue(cfg.kinetic_alpha)
+            self.cmb_xy.setCurrentIndex(
+                0 if cfg.swap_xy_auto else (1 if cfg.swap_xy else 2))
         finally:
             for w in widgets:
                 w.blockSignals(False)
@@ -388,6 +430,78 @@ class SettingsDialog(QDialog):
         self.show()
         self.raise_()
         self.activateWindow()
+
+
+class XYOrderDialog(QDialog):
+    """载入数据时无法自动判定坐标列序 -> 问用户一次。
+
+    什么时候弹：每个文件都跑"列头名 + 数值量级"两层判定，**只要有一个文件判不出来**
+    且当前是「自动判定」模式，就弹这个框。判得出来的时候不打扰。
+
+    默认勾选「写入工程设置」：选完就固化成显式指定（swap_xy_auto=False + swap_xy=…），
+    这样下次载入同一批数据不会再问一遍——否则"每次都判不出来"的文件会反复打断。
+    """
+
+    def __init__(self, items, parent=None):
+        """items: [(文件名, XYDecision), ...]，只应传入判不出来的那些。"""
+        super().__init__(parent)
+        self.setWindowTitle("请确认坐标列序")
+        self.setMinimumWidth(520)
+
+        lines = ["检测到以下文件无法自动判定「第 1 列是哪种坐标」：", ""]
+        for fn, d in items:
+            lines.append(f"  · {fn}")
+            lines.append(f"      {d.note}")
+        lines.append("")
+        lines.append("请对以上文件统一指定：")
+        lbl = QLabel("\n".join(lines))
+        lbl.setWordWrap(True)
+        lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
+        # 两个单选放在同一个 widget 里 -> 自动互斥，不需要 QButtonGroup
+        box = QWidget()
+        self.rdo_north = QRadioButton("第 1 列是北坐标（测量惯例，也是原程序的行为）")
+        self.rdo_east = QRadioButton("第 1 列是东坐标（前两列与上一种相反）")
+        self.rdo_north.setChecked(True)
+        vbox = QVBoxLayout(box)
+        vbox.setContentsMargins(0, 0, 0, 0)
+        vbox.addWidget(self.rdo_north)
+        vbox.addWidget(self.rdo_east)
+
+        self.chk_save = QCheckBox("写入工程设置（保存工程后长期生效，下次不再询问）")
+        self.chk_save.setChecked(True)          # 默认写入：避免反复询问
+
+        note = QLabel(
+            "说明：程序内部固定按「x = 东坐标、y = 北坐标」计算；"
+            "这一项只决定从哪一列取 x、哪一列取 y。\n"
+            "⚠ 选错不会影响水位/流量等计算结果，但**导出的平面坐标会 x/y 互换**"
+            "（拿进 CAD/GIS 会镜像）。")
+        note.setWordWrap(True)
+        note.setStyleSheet("color:#5F5E5A;")
+
+        btn_ok = QPushButton("确定")
+        btn_ok.clicked.connect(self.accept)
+        btn_cancel = QPushButton("取消（按当前设置继续）")
+        btn_cancel.clicked.connect(self.reject)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_row.addWidget(btn_cancel)
+        btn_row.addWidget(btn_ok)
+
+        lay = QVBoxLayout(self)
+        lay.addWidget(lbl)
+        lay.addWidget(box)
+        lay.addWidget(self.chk_save)
+        lay.addWidget(note)
+        lay.addLayout(btn_row)
+
+    def swap(self) -> bool:
+        """用户选的列序：True = 第 1 列是北坐标。"""
+        return self.rdo_north.isChecked()
+
+    def write_to_settings(self) -> bool:
+        """是否要把它固化成工程设置。"""
+        return self.chk_save.isChecked()
 
 
 def _fmt(v, digits: int) -> str:

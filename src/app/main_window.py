@@ -29,7 +29,7 @@ from core import version as version_mod
 from core.chainage import compute_chainage
 from .dialogs import (AboutDialog, BatchDialog, DisasterDialog,
                       SettingsDialog, SlopeDialog, ZoneDialog, HydroLossDialog, Hydro1DDialog,
-                      ExportOptionsDialog)
+                      ExportOptionsDialog, XYOrderDialog)
 from .param_panel import ParamPanel
 from .profile_view import ProfileView
 from .rating_view import RatingView
@@ -156,6 +156,8 @@ class MainWindow(QMainWindow):
         self.dlg_settings.changed.connect(self._on_settings_changed)
         self.dlg_settings.thresholdsChanged.connect(self._on_thresholds_changed)
         self.dlg_settings.exportChanged.connect(self._on_export_settings_changed)
+        # 坐标列序在**解析阶段**就用掉了，改完重算没用 -> 单独走重载路径
+        self.dlg_settings.coordChanged.connect(self._on_coord_changed)
         self.dlg_batch.applyRequested.connect(self._apply_batch_from_dialog)
         self.dlg_batch.groupChanged.connect(self._on_batch_group_changed)
         self.dlg_batch.zoneChanged.connect(self._on_batch_zone_changed)
@@ -545,6 +547,28 @@ class MainWindow(QMainWindow):
             f"下次导出即生效（无需重算）。")
         self._set_dirty()
 
+    def _on_coord_changed(self):
+        """坐标列序变化：**必须重新载入数据**，光重算没用。
+
+        它决定的是"前两列谁是谁"，在 reader 的解析阶段就用掉了；
+        只调 `_recalc()` 不会重新读文件，图上的坐标还是旧的。
+        （与「桩号原点」当时那个 bug 是同一类，所以这里显式重载。）
+
+        与「载入时的坐标列序确认框」行为一致：两者写的是同一组设置
+        （`swap_xy_auto` / `swap_xy`），生效方式也都是重新载入一遍数据。
+        """
+        self._sync_cfg()
+        if self.project is None:
+            self.lbl_status.setText("坐标列序已记录，下次载入数据时生效。")
+            self._set_dirty()
+            return
+        if not self._maybe_save():          # 重载会丢掉未保存的编辑，先问一句
+            self.dlg_settings.sync_from(self.cfg)   # 取消 -> 界面回滚成实际配置
+            return
+        self._load()
+        self.lbl_status.setText(
+            f"坐标列序已更改，已重新载入数据。{getattr(self, '_xy_note', '')}")
+
     def _on_thresholds_changed(self):
         """仅阈值变化时的提示：突出受影响的断面数。"""
         if self.project is None:
@@ -670,15 +694,67 @@ class MainWindow(QMainWindow):
             pass
         return {"dir": self.data_dir, "files": files}
 
-    def _load(self):
+    def _xy_summary(self, xy_report) -> str:
+        """把各文件的坐标列序判定汇总成状态栏的一句话。
+
+        目录内不一致要**明确说出来**：那种情况下导出的平面坐标必然有一部分是错的，
+        静默按某一个值跑完全程是最坏的结果。
+        """
+        if not xy_report:
+            return ""
+        swaps = {d.swap for _fn, d in xy_report}
+        if len(swaps) > 1:
+            detail = "、".join(f"{fn}(第1列{'北' if d.swap else '东'})"
+                              for fn, d in xy_report)
+            return ("　⚠ 目录内文件的坐标列序不一致：" + detail +
+                    "。导出的平面坐标会有一半是错的，请先统一数据格式。")
+        d = xy_report[0][1]
+        tag = "自动判定" if self.cfg.swap_xy_auto else "按设置"
+        if d.confident:
+            return f"　坐标列序（{tag}）：{d.describe()}。"
+        return f"　坐标列序未确定，暂按「{d.describe()}」。"
+
+    def _load(self, xy_override: bool | None = None):
+        """载入数据目录。
+
+        xy_override：直接指定列序（True=第 1 列是北坐标），跳过自动判定。
+        用于"用户刚在坐标列序确认框里选过"的那一次重读，避免问了又判、判了又问。
+        """
         self._sync_cfg()
+        xy_report: list = []
         try:
-            project, warnings = load_folder(self.data_dir, self.cfg)
+            project, warnings = load_folder(self.data_dir, self.cfg,
+                                            xy_override=xy_override,
+                                            xy_report=xy_report)
         except Exception as e:
             QMessageBox.critical(self, "载入失败", f"{e}\n\n{traceback.format_exc()}")
             return
+
+        # 有个文件判不出列序，且当前是"自动判定"模式 -> 先问一句再往下做，
+        # 免得把一堆重活干完又得推倒重来。
+        ask = [(fn, d) for fn, d in xy_report
+               if not d.confident and self.cfg.swap_xy_auto]
+        if ask and xy_override is None and not getattr(self, "_xy_asking", False):
+            self._xy_asking = True
+            try:
+                dlg = XYOrderDialog(ask, self)
+                accepted = dlg.exec() == QDialog.Accepted
+                swap, write = (dlg.swap(), dlg.write_to_settings()) if accepted \
+                    else (None, False)
+            finally:
+                self._xy_asking = False
+            if accepted:
+                if write:
+                    # 固化：下次载入同一批数据不再问（与设置面板是同一组字段）
+                    self.cfg.swap_xy_auto = False
+                    self.cfg.swap_xy = swap
+                    self.dlg_settings.sync_from(self.cfg)
+                self._load(xy_override=swap)
+                return
+
         self.project = project
         self.warnings = warnings
+        self._xy_note = self._xy_summary(xy_report)
         # 从数据目录载入的工程还没有对应的 .dmprj 文件
         self.current_path = None
         self.data_source = self._scan_source_files()
@@ -709,6 +785,7 @@ class MainWindow(QMainWindow):
                     f"{filled} 个断面，**请核实后按实际取值修改**。")
         if warnings:
             msg += "　告警：" + "；".join(warnings[:3])
+        msg += self._xy_note
         self.lbl_status.setText(msg)
         self._set_dirty(True)      # 刚载入的数据还没保存成工程文件
         self._update_title()

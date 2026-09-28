@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional
 
 from .config import Config
@@ -33,6 +33,10 @@ class Block:
     name: str
     rows: list[list] = field(default_factory=list)
     kind: str = "skip"          # cross / profile / skip
+    # 列头行（标题行的下一行，如 ["X坐标", "Y坐标", "起点距", "高程"]）。
+    # 由 split_blocks 一并取出，供 detect_xy_order 判断列序用；
+    # 没有列头行（第一行就是数据）时为空列表。
+    header: list = field(default_factory=list)
 
 
 @dataclass
@@ -50,6 +54,8 @@ class ParsedBlocks:
     profiles: list[ProfileData] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     seq: list[tuple[str, int]] = field(default_factory=list)
+    # X/Y 列序判定结果（见 detect_xy_order）。None = 未做判定。
+    xy: Optional["XYDecision"] = None
 
 
 def _to_float(v) -> Optional[float]:
@@ -136,7 +142,8 @@ def split_blocks(raw: list[list], cfg: Config) -> list[Block]:
         b = b_matlab if cfg.compat_drop_last_point else b_actual
 
         rows = raw[a:max(b, a)]
-        blocks.append(Block(name=name, rows=rows, kind=classify(name, cfg)))
+        blocks.append(Block(name=name, rows=rows, kind=classify(name, cfg),
+                            header=list(raw[h0 + 1]) if h0 + 1 < len(raw) else []))
 
     return blocks
 
@@ -266,11 +273,246 @@ def group_into_profile_lines(sections: list[Section],
     return [ProfileLine(name=k, sections=v) for k, v in buckets.items()]
 
 
-def load_file(path: str, cfg: Config, sheet_name: Optional[str] = None) -> ParsedBlocks:
-    """载入单个文件。一个文件可能含多个「纵断面」块，全部保留。"""
+# =====================================================================
+# X/Y 列序判定（详见 DESIGN.md §4.8）
+# =====================================================================
+# 要判定的其实只有一句话：**第 1 列是北坐标还是东坐标**。
+# 内部约定固定 x=东、y=北，所以判出来直接就是 cfg.swap_xy 的取值。
+#
+# 只用两层证据，都不做几何推断：
+#   层 1 列头名：强信号（含「北/纵/N」「东/横/E」等）可定论。
+#                裸 X / Y **只算弱信号**——中国测量惯例 X=北，而数学/CAD 习惯
+#                里 X 常指东，"列头 X坐标装北坐标"与"列头 X坐标装东坐标"
+#                两种文件在文字层面完全一样，字母本身不构成证据。
+#   层 2 数值量级：中国境内高斯投影的三档区间互不重叠，是很硬的证据。
+#
+# 两层都拿不准就报 confident=False，由界面问用户，**不猜**。
+
+#: 列头里表示"北坐标"的强关键词
+_HEADER_NORTH = ("北", "纵", "northing")
+#: 列头里表示"东坐标"的强关键词
+_HEADER_EAST = ("东", "横", "easting")
+
+#: 数值量级区间（中国境内 CGCS2000 / 西安80 高斯投影）。三档互不重叠是判据成立的前提。
+NORTH_RANGE = (2.0e6, 6.0e6)        # 北坐标：7 位，约 2.0~6.0 百万
+EAST_ZONE_RANGE = (1.0e7, 4.6e7)    # 东坐标**含带号**：8 位（3° 带 25~45 带、6° 带 13~23 带）
+EAST_PLAIN_RANGE = (1.0e5, 1.0e6)   # 东坐标**不含带号**：6 位，多在 5.0e5 附近
+
+_XY_MIN_SAMPLES = 3      # 每列至少要有这么多有效数值才判定
+_XY_HIT_RATIO = 0.8      # 区间命中率阈值（个别跳点不影响）
+_XY_MAX_SAMPLE = 50      # 每块取样行数上限
+
+
+@dataclass
+class XYDecision:
+    """一个文件的 X/Y 列序判定结果。"""
+    swap: bool                  # 结论：True = 第 1 列是北坐标（等价 cfg.swap_xy=True）
+    confident: bool             # 能否定论；False 时界面应当询问用户
+    source: str                 # 依据：列头+量级 / 量级 / 列头 / 设置 / 指定 / 未判定
+    note: str                   # 一行说明（含证据），用于状态栏与日志
+    conflict: bool = False      # 证据之间矛盾（列头 vs 量级、块与块之间）
+
+    def describe(self) -> str:
+        """人间可读的一句话，如「第 1 列=北坐标（列头+量级）」。"""
+        return f"第 1 列={'北' if self.swap else '东'}坐标（{self.source}）"
+
+
+def _looks_like_header(cells: list) -> bool:
+    """列头行的判据：前两列至少有一个是**非数值文字**。
+
+    第一行就是数据的文件会被判为 False，直接走量级层。
+    """
+    for v in (cells or [])[:2]:
+        if v is None:
+            continue
+        if _to_float(v) is None and str(v).strip():
+            return True
+    return False
+
+
+def _header_kind(text) -> Optional[bool]:
+    """一列列头文字指向哪种坐标：True=北 / False=东 / None=没有强信号。"""
+    s = str(text or "").strip().lower()
+    if not s:
+        return None
+    for k in _HEADER_NORTH:
+        if k in s:
+            return True
+    for k in _HEADER_EAST:
+        if k in s:
+            return False
+    return None
+
+
+def _header_order(cells: list) -> tuple[Optional[bool], bool]:
+    """按列头文字判断列序。返回 (第 1 列是否北, 是否矛盾)。
+
+    第一项为 None 表示"没有强信号"（裸 X/Y、无列头、或两列同类）。
+    """
+    if not _looks_like_header(cells):
+        return None, False
+    first = _header_kind(cells[0] if len(cells) > 0 else None)
+    second = _header_kind(cells[1] if len(cells) > 1 else None)
+    if first is None and second is None:
+        return None, False
+    if first is None:
+        return (not second), False          # 第 2 列是北 -> 第 1 列是东
+    if second is None:
+        return first, False
+    if first == second:
+        return None, True                   # 两列都指同一边，列头自相矛盾
+    return first, False
+
+
+def _classify_column(values: list[float]) -> Optional[str]:
+    """把一列数值分类成 north / east / east_weak / None。"""
+    vals = [v for v in values[:_XY_MAX_SAMPLE] if v is not None]
+    if len(vals) < _XY_MIN_SAMPLES:
+        return None
+
+    def hit(lo: float, hi: float) -> bool:
+        return sum(1 for v in vals if lo <= v <= hi) / len(vals) >= _XY_HIT_RATIO
+
+    if hit(*NORTH_RANGE):
+        return "north"
+    if hit(*EAST_ZONE_RANGE):
+        return "east"
+    if hit(*EAST_PLAIN_RANGE):
+        return "east_weak"      # 1e5~1e6 排他性弱，需另一列辅证
+    return None
+
+
+def _order_from_pair(c1: Optional[str], c2: Optional[str]) -> Optional[bool]:
+    """由两列的量级分类推出列序：True=第 1 列北 / False=第 1 列东 / None=判不出。"""
+    if c1 == "north":
+        return True                 # 北坐标区间排他性最强，单独即可定论
+    if c1 == "east":                # 含带号的东坐标同样很强
+        return False
+    if c1 == "east_weak":
+        return False if c2 == "north" else None     # 弱东必须配一个明确的北
+    if c2 == "north":               # 第 2 列是北坐标 -> 第 1 列只能是东
+        return False
+    return None
+
+
+def _column_values(rows: list[list], col: int) -> list[float]:
+    out: list[float] = []
+    for row in rows:
+        if len(row) <= col:
+            continue
+        v = _to_float(row[col])
+        if v is not None:
+            out.append(v)
+    return out
+
+
+def _aggregate(orders: list[bool]) -> tuple[Optional[bool], bool]:
+    """把各块的结论合并成文件级结论。返回 (结论, 是否矛盾)。"""
+    if not orders:
+        return None, False
+    if all(o == orders[0] for o in orders):
+        return orders[0], False
+    return None, True               # 块与块之间不一致
+
+
+def detect_xy_order(blocks: list[Block], cfg: Config) -> XYDecision:
+    """判定「第 1 列是北坐标还是东坐标」。只做列头名与数值量级两层。"""
+    # ---- 层 1：列头 ----
+    h_orders: list[bool] = []
+    h_conflict = False
+    for b in blocks:
+        o, c = _header_order(b.header)
+        h_conflict = h_conflict or c
+        if o is not None:
+            h_orders.append(o)
+    h_order, h_mixed = _aggregate(h_orders)
+
+    # ---- 层 2：数值量级 ----
+    m_orders: list[bool] = []
+    m_detail: list[str] = []
+    for b in blocks:
+        c1 = _classify_column(_column_values(b.rows, 0))
+        c2 = _classify_column(_column_values(b.rows, 1))
+        if not m_detail and (c1 or c2):
+            m_detail.append(f"{b.name}: 第1列={c1 or '未知'}、第2列={c2 or '未知'}")
+        o = _order_from_pair(c1, c2)
+        if o is not None:
+            m_orders.append(o)
+    m_order, m_mixed = _aggregate(m_orders)
+
+    ambiguous = h_conflict or h_mixed or m_mixed
+
+    # ---- 合并 ----
+    if h_order is not None and m_order is not None and h_order == m_order:
+        return XYDecision(m_order, True, "列头+量级",
+                          f"第 1 列={'北' if m_order else '东'}坐标"
+                          f"（列头与数值量级一致{'；' + m_detail[0] if m_detail else ''}）",
+                          conflict=ambiguous)
+    if m_order is not None:
+        # 量级是硬证据（区间互不重叠），列头文字可能是前人填错的 -> 量级优先
+        n = (f"第 1 列={'北' if m_order else '东'}坐标（按数值量级判定"
+             f"{'：' + m_detail[0] if m_detail else ''}）")
+        if h_order is not None:
+            n += "；⚠ 列头文字与数值量级不一致，已按量级处理"
+        return XYDecision(m_order, True, "量级", n, conflict=ambiguous or h_order is not None)
+    if h_order is not None:
+        return XYDecision(h_order, True, "列头",
+                          f"第 1 列={'北' if h_order else '东'}坐标（按列头文字判定）",
+                          conflict=ambiguous)
+    # 都没判出来
+    why = "列头与数值量级互相矛盾" if ambiguous else "列头未明示、数值也不在可判定的量级区间"
+    return XYDecision(cfg.swap_xy, False, "未判定",
+                      f"无法自动判定坐标列序（{why}），暂按当前设置："
+                      f"第 1 列是{'北' if cfg.swap_xy else '东'}坐标",
+                      conflict=ambiguous)
+
+
+def resolve_xy_order(cfg: Config, detected: XYDecision) -> tuple[bool, XYDecision]:
+    """把「自动判定 / 显式指定」的语义落成一个确定的列序。返回 (swap, 采用的决定)。
+
+    两种模式的边界说清楚，界面上的两个入口（计算设置里的下拉、载入时的确认框）
+    都收敛到这里，行为才一致：
+
+      * `swap_xy_auto=True` —— **数据说了算**：采用判定结论；判不出来时
+        采用 `swap_xy` 兜底，并由界面弹窗问用户（detected.confident=False 即信号）。
+      * `swap_xy_auto=False` —— **你说了算**：一律用 `swap_xy`，判定只用来提醒；
+        若判定明确且与设置相反，记一条矛盾告警，但**不覆盖**你的选择。
+    """
+    if cfg.swap_xy_auto:
+        return detected.swap, detected
+
+    swap = cfg.swap_xy
+    if detected.confident and detected.swap != swap:
+        return swap, XYDecision(
+            swap, True, "设置",
+            f"列序由设置指定：第 1 列是{'北' if swap else '东'}坐标；"
+            f"⚠ 但数据看起来是第 1 列{'北' if detected.swap else '东'}坐标"
+            f"（依据：{detected.source}）——如不符请到「计算设置 → 坐标列序」修改",
+            conflict=True)
+    return swap, XYDecision(
+        swap, True, "设置", f"列序由设置指定：第 1 列是{'北' if swap else '东'}坐标")
+
+
+def load_file(path: str, cfg: Config, sheet_name: Optional[str] = None,
+              xy_override: Optional[bool] = None) -> ParsedBlocks:
+    """载入单个文件。一个文件可能含多个「纵断面」块，全部保留。
+
+    xy_override 给定时直接用它决定列序（用于用户刚在确认框里选过的这一次载入），
+    不再做判定，避免"问了又判、判了又问"的死循环。
+    """
     raw = read_sheet_rows(path, sheet_name)
     blocks = split_blocks(raw, cfg)
-    return blocks_to_sections(blocks, cfg)
+
+    if xy_override is not None:
+        swap = bool(xy_override)
+        decision = XYDecision(swap, True, "指定",
+                              f"按你的选择读取：第 1 列是{'北' if swap else '东'}坐标")
+    else:
+        swap, decision = resolve_xy_order(cfg, detect_xy_order(blocks, cfg))
+
+    parsed = blocks_to_sections(blocks, replace(cfg, swap_xy=swap))
+    parsed.xy = decision
+    return parsed
 
 
 def load_project(section_path: str,
@@ -307,7 +549,9 @@ def load_project(section_path: str,
 
 
 def load_folder(folder: str, cfg: Optional[Config] = None,
-                param_path: Optional[str] = None
+                param_path: Optional[str] = None,
+                xy_override: Optional[bool] = None,
+                xy_report: Optional[list] = None
                 ) -> tuple[Project, list[str]]:
     """批量读取整个文件夹下的所有 xlsx。
 
@@ -317,6 +561,12 @@ def load_folder(folder: str, cfg: Optional[Config] = None,
     分组策略由 cfg.group_rule 决定：
         "spatial"（默认）—— 按横断面与纵断面在平面上是否相交分组
         其余            —— 按块的出现顺序分组（纵断面块管它后面的横断面）
+
+    xy_override：直接指定列序（True=第 1 列是北坐标），跳过自动判定。
+                 用于"用户刚在确认框里选过"的那一次重载。
+    xy_report  ：出参。传入一个 list 时，会按文件追加
+                 `(文件名, XYDecision)`，供界面汇总展示或弹窗询问。
+                 core 层不认识界面，所以用出参而不是回调。
     """
     cfg = cfg or Config()
     warnings: list[str] = []
@@ -328,13 +578,20 @@ def load_folder(folder: str, cfg: Optional[Config] = None,
         path = os.path.join(folder, fn)
         stem = os.path.splitext(fn)[0]
         try:
-            parsed = load_file(path, cfg)
+            parsed = load_file(path, cfg, xy_override=xy_override)
         except Exception as e:
             warnings.append(f"{fn}: 读取失败 - {e}")
             continue
         if not parsed.sections:
             warnings.append(f"{fn}: 未解析到有效横断面")
             continue
+        if parsed.xy is not None:
+            if xy_report is not None:
+                xy_report.append((fn, parsed.xy))
+            # 判不出来 / 证据矛盾都是需要用户过目的，进告警；
+            # 判定明确的只由界面写一行汇总，不占用告警位
+            if not parsed.xy.confident or parsed.xy.conflict:
+                warnings.append(f"{fn}: {parsed.xy.note}")
         if parsed.skipped:
             warnings.append(f"{fn}: 已排除非编号块 {parsed.skipped}")
         if len(parsed.profiles) > 1:

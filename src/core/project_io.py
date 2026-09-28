@@ -40,7 +40,13 @@ FORMAT_ID = "duanmian-project"
 # v2：断面新增「手动覆盖」字段（深泓点 / 分区边界 / 成灾水位），见 model.Section。
 #     读取时按"缺字段即全自动"处理，所以 v1 文件仍能正常打开（向后兼容）。
 #     反向（v1 程序打开 v2 文件）会被版本检查挡下，避免静默丢掉人工设定。
-FORMAT_VERSION = 3
+# v3：Config 新增 kinetic_alpha / kinetic_alpha_auto；断面新增局部水头损失系数
+#     （hydro_loss_contraction / expansion）；纵断面线新增 hydro1d_* 字段。
+#     ⚠ 当时忘了把这一行补上，注释停在 v2 —— 补记于此。
+# v4：Config 新增 swap_xy_auto（坐标列序是否按数据自动判定，见 reader.detect_xy_order）。
+#     缺该字段的旧工程按「自动判定」处理（Config.from_dict 走非严格模式取默认值）；
+#     反向仍照例挡下：旧程序不认识这个字段，静默忽略会让人以为"设置没生效"。
+FORMAT_VERSION = 4
 
 SUFFIX = ".dmprj"
 FILE_FILTER = "断面工程文件 (*.dmprj);;所有文件 (*)"
