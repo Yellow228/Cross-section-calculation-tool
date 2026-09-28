@@ -11,7 +11,7 @@ import sys
 import traceback
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QFileDialog, QGroupBox, QHBoxLayout, QLabel,
+from PySide6.QtWidgets import (QDialog, QFileDialog, QGroupBox, QHBoxLayout, QLabel,
                               QListWidget, QListWidgetItem, QMainWindow,
                               QMessageBox, QPushButton, QSplitter, QTabWidget,
                               QVBoxLayout, QWidget)
