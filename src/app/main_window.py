@@ -131,24 +131,6 @@ class MainWindow(QMainWindow):
 
     # ---------------- 界面 ----------------
     def _build_ui(self):
-        # 顶部工具条
-        self.btn_dir = QPushButton("选择数据目录…")
-        self.btn_dir.clicked.connect(self._pick_dir)
-        self.btn_load = QPushButton("载入并计算")
-        self.btn_load.clicked.connect(self._load)
-        self.btn_recalc = QPushButton("重新计算")
-        self.btn_recalc.clicked.connect(self._recalc)
-        self.btn_export = QPushButton("导出结果")
-        self.btn_export.clicked.connect(self._export)
-        self.lbl_dir = QLabel(self.data_dir)
-
-        top = QHBoxLayout()
-        top.addWidget(self.btn_dir)
-        top.addWidget(self.lbl_dir, 1)
-        top.addWidget(self.btn_load)
-        top.addWidget(self.btn_recalc)
-        top.addWidget(self.btn_export)
-
         # ---- 顶部菜单栏：设置面板都做成点开的非模态窗口 ----
         self.dlg_settings = SettingsDialog(self.cfg, self)
         self.dlg_batch = BatchDialog(self)
@@ -289,9 +271,8 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
         root.setContentsMargins(8, 4, 8, 4)
-        root.addLayout(top)
         root.addWidget(split, 1)
-        self.lbl_status = QLabel("就绪。请点「载入并计算」。")
+        self.lbl_status = QLabel("就绪。请点「文件 → 导入excel数据…」。")
         self.lbl_status.setWordWrap(True)
         root.addWidget(self.lbl_status)
 
@@ -328,9 +309,14 @@ class MainWindow(QMainWindow):
 
         m.addSeparator()
 
-        self.act_data = m.addAction("载入数据目录…")
-        self.act_data.setToolTip("选择存放 xlsx 的目录，选完立即载入计算")
+        self.act_data = m.addAction("导入excel数据…")
+        self.act_data.setToolTip("选择存放 xlsx 的目录导入并管理数据")
         self.act_data.triggered.connect(self._pick_and_load)
+
+        self.act_recalc = m.addAction("重新计算")
+        self.act_recalc.setShortcut("Ctrl+R")
+        self.act_recalc.setToolTip("基于当前参数重新计算")
+        self.act_recalc.triggered.connect(self._recalc)
 
         self.act_export = m.addAction("导出结果…")
         self.act_export.setShortcut("Ctrl+E")
@@ -492,19 +478,23 @@ class MainWindow(QMainWindow):
         self._set_dirty(False)
         self._update_title()
         self.lbl_status.setText(
-            "已新建空工程。请用「文件 → 载入数据目录…」或工具栏载入数据。")
+            "已新建空工程。请用「文件 → 导入excel数据…」导入数据。")
 
     def _pick_and_load(self):
-        """菜单里的「载入数据目录…」：选完目录立即载入（一步完成）。"""
-        if not self._maybe_save():
-            return
-        d = QFileDialog.getExistingDirectory(
-            self, "选择存放 xlsx 的目录", self.data_dir)
-        if not d:
-            return
-        self.data_dir = d
-        self.lbl_dir.setText(d)
-        self._load()
+        """打开导入excel数据窗口"""
+        from .import_dialog import ImportDataDialog
+        dlg = ImportDataDialog(self.project, self.data_dir, self.cfg, self)
+        if dlg.exec() == QDialog.Accepted:
+            new_project = dlg.get_project()
+            self.project = new_project
+            # 从数据目录载入/修改的数据，认为是未保存
+            self._set_dirty(True)
+            self._solve_all()
+            self._refresh_line_list()
+            self.param_panel.set_sections(self.project.all_sections() if self.project else [])
+            msg = (f"数据导入完成：{len(self.project.profile_lines) if self.project else 0} 条纵断面线，"
+                   f"{len(self.project.all_sections()) if self.project else 0} 个横断面。")
+            self.lbl_status.setText(msg)
 
     def closeEvent(self, event):
         """关窗口前给未保存的改动一次机会。"""
@@ -512,12 +502,6 @@ class MainWindow(QMainWindow):
             event.accept()
         else:
             event.ignore()
-
-    def _pick_dir(self):
-        d = QFileDialog.getExistingDirectory(self, "选择存放 xlsx 的目录", self.data_dir)
-        if d:
-            self.data_dir = d
-            self.lbl_dir.setText(d)
 
     def _sync_cfg(self):
         self.dlg_settings.sync_to(self.cfg)
