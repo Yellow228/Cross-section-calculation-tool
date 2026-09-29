@@ -112,6 +112,45 @@ def _restore_msgbox(saved: dict) -> None:
             pass
 
 
+def _pick_data_dir(argv: list[str], base: str) -> tuple[str, bool, str]:
+    """从自检参数里取数据目录，返回 (目录, 是否回退了示范数据, 提示语)。
+
+    支持 `--data X` / `--data=X` / 位置参数三种写法——只认位置参数时，
+    写成 `--selftest --data samples/demo_data` 会把 `--data` 当成目录名，
+    而它不在磁盘上，于是**静默回退**到 data/ 或示范数据：
+    用户以为自己指定了目录，跑完却看不出用的根本不是那一份。
+    """
+    data_arg = ""
+    positional = [a for a in argv if not a.startswith("-")]
+    for i, a in enumerate(argv):
+        if a == "--data" and i + 1 < len(argv):
+            data_arg = argv[i + 1]
+            break
+        if a.startswith("--data="):
+            data_arg = a.split("=", 1)[1]
+            break
+    else:
+        # 位置参数里排除掉自己（--selftest 已被 main 剥掉，这里不会再出现）
+        if positional:
+            data_arg = positional[0]
+
+    note = ""
+    if data_arg:
+        if os.path.isdir(data_arg):
+            return data_arg, False, ""
+        # 明确说了目录却不存在 —— 必须吼出来，不能装作没听见回退。
+        note = (f"⚠ 指定的数据目录不存在：{data_arg}"
+                f"（已改为按默认顺序回退，本次自检用的**不是**你指定的那份数据）")
+
+    real = os.path.join(base, "data")
+    if os.path.isdir(real):
+        return real, False, note
+    demo = os.path.join(base, "samples", "demo_data")
+    if os.path.isdir(demo):
+        return demo, True, note
+    return data_arg or real, False, note
+
+
 def _selftest(argv: list[str]) -> int:
     """离屏构造界面、载入数据、渲染三张图，验证整包可用。"""
     os.environ["QT_QPA_PLATFORM"] = "offscreen"
@@ -121,17 +160,11 @@ def _selftest(argv: list[str]) -> int:
     else:
         base = os.path.dirname(os.path.dirname(_HERE))
 
-    data_dir = argv[0] if argv else os.path.join(base, "data")
-    used_fallback = False
-    if not os.path.isdir(data_dir):
-        # 真实数据不随仓库分发，所以新 clone 出来是没有 data/ 的。
-        # 退回仓库里那份**合成**示范数据（samples/demo_data，可公开），
-        # 否则自检对每个新 clone 的人都跑不起来。
-        demo = os.path.join(base, "samples", "demo_data")
-        if os.path.isdir(demo):
-            data_dir, used_fallback = demo, True
+    data_dir, used_fallback, dir_note = _pick_data_dir(argv, base)
     log_path = os.path.join(os.getcwd(), "_selftest.txt")
     lines: list[str] = []
+    if dir_note:
+        lines.append(dir_note)
 
     # 弹窗替身要**最早**装（在构造 MainWindow 之前）：没有数据时
     # `_open_batch_dialog()` 会弹「请先载入数据」，装晚了就卡死在那儿。
@@ -189,7 +222,8 @@ def _selftest(argv: list[str]) -> int:
         assert win.project is not None, (
             f"自检需要断面数据，但 {data_dir} 下没有可用的 xlsx。\n"
             f"请把你的断面 xlsx 放进 data\\，或用参数指定目录：\n"
-            f"    python src\\app\\main.py --selftest 你的数据目录"
+            f"    python src\\app\\main.py --selftest 你的数据目录\n"
+            f"    python src\\app\\main.py --selftest --data 你的数据目录"
         )
 
         # 逐个切换，确保每个视图都能画出来

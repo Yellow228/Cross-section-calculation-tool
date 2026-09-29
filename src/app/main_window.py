@@ -138,6 +138,7 @@ class MainWindow(QMainWindow):
         self.dlg_settings.changed.connect(self._on_settings_changed)
         self.dlg_settings.thresholdsChanged.connect(self._on_thresholds_changed)
         self.dlg_settings.exportChanged.connect(self._on_export_settings_changed)
+        self.dlg_settings.xyOrderRequested.connect(self._on_xy_order_requested)
         self.dlg_batch.applyRequested.connect(self._apply_batch_from_dialog)
         self.dlg_batch.groupChanged.connect(self._on_batch_group_changed)
         self.dlg_batch.zoneChanged.connect(self._on_batch_zone_changed)
@@ -481,20 +482,59 @@ class MainWindow(QMainWindow):
             "已新建空工程。请用「文件 → 导入excel数据…」导入数据。")
 
     def _pick_and_load(self):
-        """打开导入excel数据窗口"""
+        """菜单「文件 → 导入excel数据…」：打开导入窗口，确认后装载到主界面。
+
+        ⚠ 与 `_load()` 是**两条独立路径**，新导入窗口不会走 `_load()`。
+        所以 `_load()` 里那些"载入后必须做的事"这里要自己补齐——
+        最容易漏的是 `_fill_missing_params`：漏了它，从界面导入的数据
+        参数全是空的，三张图一片空白却没有任何报错。
+        """
         from .import_dialog import ImportDataDialog
         dlg = ImportDataDialog(self.project, self.data_dir, self.cfg, self)
-        if dlg.exec() == QDialog.Accepted:
-            new_project = dlg.get_project()
-            self.project = new_project
-            # 从数据目录载入/修改的数据，认为是未保存
-            self._set_dirty(True)
-            self._solve_all()
-            self._refresh_line_list()
-            self.param_panel.set_sections(self.project.all_sections() if self.project else [])
-            msg = (f"数据导入完成：{len(self.project.profile_lines) if self.project else 0} 条纵断面线，"
-                   f"{len(self.project.all_sections()) if self.project else 0} 个横断面。")
-            self.lbl_status.setText(msg)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        self._sync_cfg()
+
+        # 列序已由对话框自己处理（判不出就当场问、并按用户答案重读，见
+        # `ImportDataDialog._read_dir`），这里只接住"没确认"的记号，
+        # 供状态栏提示 + 「计算设置 → 坐标列序…」复核。
+        self._xy_pending = getattr(dlg, "xy_pending", None) or None
+
+        self.project = dlg.get_project()
+        if self.project is None:
+            return
+        # 导入窗口里选的目录记下来，供下次打开时定位
+        if dlg.data_dir:
+            self.data_dir = dlg.data_dir
+        # 从数据目录载入/修改的数据，还没有对应的 .dmprj 文件
+        self.current_path = None
+        self.data_source = self._scan_source_files()
+        self._set_dirty(True)
+
+        all_secs = self.project.all_sections()
+        filled = self._fill_missing_params(all_secs)
+        if filled:
+            self.dlg_batch.set_result(
+                f"导入时自动填补了 {filled} 个断面的参数。请核实后按实际取值修改。",
+                ok=False)
+
+        self._solve_all()
+        self._refresh_line_list()
+        self.param_panel.set_sections(all_secs)
+
+        msg = (f"数据导入完成：{len(self.project.profile_lines)} 条纵断面线，"
+               f"{len(all_secs)} 个横断面。")
+        if filled:
+            msg += (f"　⚠ 参数集缺失，已用默认值（糙率 {DEFAULT_ROUGHNESS:g}、"
+                    f"比降 {DEFAULT_SLOPE:g}、Qs {DEFAULT_DESIGN_Q:g}）填补 "
+                    f"{filled} 个断面，**请核实后按实际取值修改**。")
+        if self._xy_pending:
+            msg += "　⚠ 坐标列序未确认，导出的平面坐标两列可能颠倒" \
+                   "（可用「计算设置 → 坐标列序…」复核）。"
+        self.lbl_status.setText(msg)
+        self.dlg_settings.set_xy_status(
+            self._xy_summary(getattr(dlg, "xy_report", [])).strip("　 "))
+        self._update_title()
 
     def closeEvent(self, event):
         """关窗口前给未保存的改动一次机会。"""
@@ -505,6 +545,56 @@ class MainWindow(QMainWindow):
 
     def _sync_cfg(self):
         self.dlg_settings.sync_to(self.cfg)
+
+    def _ask_xy_order(self, ask) -> bool | None:
+        """弹「坐标列序」确认框。
+
+        返回 True/False = 输入第 1 列是/不是北坐标；None = 用户没确认（关掉了）。
+        自动判定失败时由 `_load()` 调用，也可由设置面板的「坐标列序…」手动触发。
+        """
+        dlg = XYOrderDialog(ask, self)
+        if dlg.exec() != QDialog.Accepted:
+            return None
+        choice = dlg.swap()
+        if dlg.write_to_settings():
+            # 固化兜底值：下次载入同一批数据不再问（这项没有界面入口）
+            self.cfg.first_col_is_north = choice
+        return choice
+
+    def _on_xy_order_requested(self):
+        """设置面板的「坐标列序…」：手动复核 / 更正输入列序。
+
+        存在的意义：自动判定失败那次弹窗若被用户关掉，旧写法就再无入口——
+        数据已按存疑列序载入并落盘，用户只能重开程序碰运气。这里补上正门。
+        """
+        self._sync_cfg()
+        if self.project is None:
+            QMessageBox.information(
+                self, "坐标列序",
+                "还没有载入数据。\n\n"
+                "列序在载入时自动判定；判不出来才会弹窗问一次，\n"
+                "之后也可以用这个按钮复核。")
+            return
+
+        # 让对话框显示"当前是按哪种列序读的"，而不是一张空表。
+        cur = self.cfg.first_col_is_north
+        pending = getattr(self, "_xy_pending", None) or []
+        dlg = XYOrderDialog(pending if pending else
+                            [("（当前数据）", None)], self)
+        dlg.set_current_hint(
+            f"当前按「输入第 1 列是{'北' if cur else '东'}坐标」读取。"
+            + ("（该判定未确认——当初的弹窗被关掉了）" if pending else ""))
+        if dlg.exec() != QDialog.Accepted:
+            return
+        choice = dlg.swap()
+        if dlg.write_to_settings():
+            self.cfg.first_col_is_north = choice
+        self._xy_pending = None
+        self._load(xy_override=choice)
+        self.lbl_status.setText(
+            "已按新的输入列序重新载入：输入第 1 列是"
+            f"{'北' if choice else '东'}坐标。"
+            "（导出的平面坐标两列随之更新，水力结果不受影响。）")
 
     def _on_settings_changed(self):
         """计算设置里任何一项改动都走这里。
@@ -684,8 +774,38 @@ class MainWindow(QMainWindow):
         d = xy_report[0][1]
         if d.confident:
             return f"　坐标列序（自动判定）：{d.describe()}。"
+        # 存疑且**还没被确认过**：这时坐标可能整体镜像（只影响导出的两列，
+        # 不影响水力结果），必须在状态栏留一句可操作的话，别让它悄悄过去。
+        tail = ""
+        if getattr(self, "_xy_pending", None):
+            tail = "　⚠ 该判定未确认，导出的平面坐标可能两列颠倒——" \
+                   "请用「计算设置」里的「坐标列序…」按钮确认一次。"
         return (f"　⚠ 坐标列序未能自动判定，暂按「输入第 1 列是"
-                f"{'北' if d.first_is_north else '东'}坐标」读取。")
+                f"{'北' if d.first_is_north else '东'}坐标」读取。" + tail)
+
+    def _fill_missing_params(self, secs) -> int:
+        """用默认值填补参数为空的断面，返回填补的断面数。
+
+        **为什么必须有这一步**：`reader.load_folder` 是纯数据层，出来的断面
+        参数一律是空的（`nan`）——xlsx 里本来就只有 x/y/起点距/高程，没有糙率、
+        比降、设计流量。参数只有两种来源：用户手填，或这里的默认值兜底。
+
+        不填补的后果很隐蔽：三张图全是空白，但程序不报任何错，用户会以为程序坏了。
+        所以**任何"把数据装进 self.project"的入口都必须调它**，不能只在某一条
+        路径上调——历史上就漏过一次：PR #3 把载入入口从工具栏换成
+        `ImportDataDialog` 后，新链路没调这一步，从界面导入数据后全部算不出结果。
+
+        `only_missing=True` 是关键：只填空字段，绝不覆盖用户已填的值。
+        （`apply_batch` 若不显式传字段值，一个都不会填，所以三个默认值必须写全。）
+        """
+        if not secs:
+            return 0
+        if not P.missing_params(secs):
+            return 0
+        return P.apply_batch(secs, only_missing=True,
+                             roughness=DEFAULT_ROUGHNESS,
+                             slope=DEFAULT_SLOPE,
+                             design_q=DEFAULT_DESIGN_Q)
 
     def _load(self, xy_override: bool | None = None):
         """载入数据目录。
@@ -695,6 +815,7 @@ class MainWindow(QMainWindow):
         用于"用户刚在列序确认框里选过"的那一次重读，避免问了又判、判了又问。
         """
         self._sync_cfg()
+        self._xy_pending = None      # 每次载入重新判定，上一轮的存疑不累积
         xy_report: list = []
         try:
             project, warnings = load_folder(self.data_dir, self.cfg,
@@ -710,22 +831,33 @@ class MainWindow(QMainWindow):
         if ask and xy_override is None and not getattr(self, "_xy_asking", False):
             self._xy_asking = True
             try:
-                dlg = XYOrderDialog(ask, self)
-                accepted = dlg.exec() == QDialog.Accepted
-                choice, write = (dlg.swap(), dlg.write_to_settings()) if accepted \
-                    else (None, False)
+                choice = self._ask_xy_order(ask)
             finally:
                 self._xy_asking = False
-            if accepted:
-                if write:
-                    # 固化兜底值：下次载入同一批数据不再问（这项没有界面入口）
-                    self.cfg.first_col_is_north = choice
+            if choice is not None:
+                self._xy_pending = None      # 已确认，撤销存疑标记
                 self._load(xy_override=choice)
                 return
+            # 用户没确认（关掉了对话框）就走默认判定继续。
+            # ⚠ 但这批文件的列序**仍是存疑的**，必须留个记号：
+            #   下面 `_pick_and_load()` 会再调一次 `_load()`，一旦这次
+            #   `_xy_asking` 还是 True（旧写法就是这样），那次调用会走到
+            #   这里又被这个 `not _xy_asking` 拦掉，于是**既不弹窗、也不记疑**，
+            #   数据带着可能镜像的坐标静默载入，而且再没有任何入口能救回来。
+            #   用户看到的是"自定义的坐标列序不弹出来"。
+            self._xy_pending = ask
+        elif ask and xy_override is None:
+            # 嵌套调用（导入对话框触发的重载）：外层已经在问了，这里只记疑。
+            self._xy_pending = ask
 
         self.project = project
         self.warnings = warnings
         self._xy_note = self._xy_summary(xy_report)
+        # 设置面板里那行"当前列序"也要刷新，否则用户打开设置看到的还是上一次的判定
+        try:
+            self.dlg_settings.set_xy_status(self._xy_summary(xy_report).strip("　 "))
+        except Exception:
+            pass
         # 从数据目录载入的工程还没有对应的 .dmprj 文件
         self.current_path = None
         self.data_source = self._scan_source_files()
@@ -734,12 +866,8 @@ class MainWindow(QMainWindow):
         # 否则三张图都是空的，用户会以为程序坏了。
         # 这里用 only_missing=True，不会覆盖任何已填的值，并在状态栏明确告知。
         all_secs = project.all_sections()
-        filled = 0
-        if P.missing_params(all_secs):
-            filled = P.apply_batch(all_secs, only_missing=True,
-                                   roughness=DEFAULT_ROUGHNESS,
-                                   slope=DEFAULT_SLOPE,
-                                   design_q=DEFAULT_DESIGN_Q)
+        filled = self._fill_missing_params(all_secs)
+        if filled:
             self.dlg_batch.set_result(
                 f"载入时自动填补了 {filled} 个断面的参数。请核实后按实际取值修改。",
                 ok=False)

@@ -1239,6 +1239,44 @@ class TestParams(unittest.TestCase):
         params.apply_batch(secs, slope=0.004, roughness=0.03, design_q=40.0)
         self.assertEqual(params.missing_params(secs), [])
 
+    def test_loaded_folder_can_be_filled_by_defaults(self):
+        """回归：导入数据后必须能用默认值把参数填齐，否则一个断面都算不出来。
+
+        `reader.load_folder` 是纯数据层，按设计把糙率/比降/Qs 全留成 NaN——
+        填默认值是**回调方**的责任。历史上主窗口 `_load()` 里做过这件事，
+        后来新增的「导入 excel 数据…」对话框直接接管了 project、绕过了那段，
+        于是导入完参数一片空白、三张图全空，用户看到的就是"导入之后不能算"。
+        这里锁死契约：不管从哪条路进来，`load_folder` 的产物都必须能靠
+        默认值补齐；补齐后 `missing_params` 必须为空。
+        """
+        from core.reader import load_folder
+        folder = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "samples", "demo_data")
+        if not os.path.isdir(folder):
+            self.skipTest("没有 samples/demo_data 目录")
+        proj, _ = load_folder(folder, Config())
+        secs = list(proj.all_sections())
+        self.assertGreater(len(secs), 0, "示范数据应至少解析出一个断面")
+
+        # 前提：纯数据层确实把参数留空（这正是"必须有人来填"的原因）
+        self.assertTrue(params.missing_params(secs),
+                        "load_folder 不该自己填默认参数——那是调用方的事")
+
+        # 契约：仅填补空白，且填完就不该再有缺口
+        n = params.apply_batch(secs, only_missing=True,
+                               roughness=0.03, slope=0.005, design_q=50.0)
+        self.assertGreater(n, 0, "应至少填补一个断面")
+        self.assertEqual(params.missing_params(secs), [],
+                         "默认值没把参数填齐，导入后仍无法计算")
+
+        # 已填的不能被默认值覆盖（only_missing 的语义）
+        first = secs[0]
+        params.set_one(first, roughness=0.045)
+        params.apply_batch(secs, only_missing=True, roughness=0.03,
+                           slope=0.005, design_q=50.0)
+        self.assertAlmostEqual(first.params.roughness, 0.045,
+                               msg="only_missing 不该覆盖已有取值")
+
 
 class TestSlope(unittest.TestCase):
     """按纵断面推算平均比降（slope.py）。

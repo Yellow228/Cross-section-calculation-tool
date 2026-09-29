@@ -32,7 +32,7 @@ Q1~Q15 的用户决策记录、以及重写中自引入缺陷（M1~M5）的复�
 其余模块**不要引入 numpy / pandas**。
 
 **主理由是可测试性**：数值核心这一层不依赖任何东西——core 里 18 个模块有 16 个是纯标准库，
-`tests/test_core.py` 的 178 个用例里有 175 个不装依赖就能用系统 Python 直接跑，
+`tests/test_core.py` 的 179 个用例里有 176 个不装依赖就能用系统 Python 直接跑，
 "改数值逻辑先跑单测"的门槛才足够低。
 次要理由：计算量只有 10⁵ 量级，纯 Python 毫秒级，numpy 的性能优势用不上；
 数值核心也不该依赖一个会自己改变归约实现的库。
@@ -111,8 +111,8 @@ Q1~Q15 的用户决策记录、以及重写中自引入缺陷（M1~M5）的复�
 **改完至少跑三层**：单测（不受界面影响）→ 界面冒烟（模拟真实点击与 Excel 粘贴）
 → 打包后自检（在 frozen 环境里把整条链路再跑一遍）。
 
-- 单测共 **178 个用例**，分两类（别笼统说"纯标准库可跑"）：
-  - **175 个纯标准库**，不需要装任何依赖，系统 Python 直接就能跑
+- 单测共 **179 个用例**，分两类（别笼统说"纯标准库可跑"）：
+  - **176 个纯标准库**，不需要装任何依赖，系统 Python 直接就能跑
   - **3 个真实数据回归测试**（`test_real_data_roundtrip`、`test_thalweg_index_matches_terrain`、
     `test_real_data_roundtrip_with_overrides`）会读 `data\`，**需要 openpyxl**。
     `data\` 不存在时它们 `skipTest` 自动跳过；但**`data\` 在、openpyxl 缺时会直接报错**
@@ -714,6 +714,94 @@ Qt 默认的 Ctrl+V 会把**整段剪贴板塞进一个单元格**；Excel 复�
 
 **护栏**：`tests/test_core.py::TestXYOrder`（列头/量级/冲突/判不出/内部恒为北/
 两种输入列序给出相同几何）与 `TestExportCoordSystem`（两档互换、列名不变）。
+
+---
+
+### #22 有**两条**装载路径，参数填补必须各自接上
+
+`reader.load_folder()` 是**纯数据层**：按设计把糙率/比降/Qs 留成 `NaN`，
+"填默认值"是**调用方**的责任。主窗口里负责这件事的是
+`MainWindow._fill_missing_params(secs)`（内部只调一次 `P.apply_batch(..., only_missing=True)`）。
+
+**两条路径都得接**：
+
+1. `MainWindow._load()` —— 打开工程 / 启动时载入；
+2. `MainWindow._pick_and_load()` —— 菜单「导入 excel 数据…」，走
+   `ImportDataDialog` 取 `get_project()`。
+
+**踩过的坑**：PR #3 把导入抽成独立对话框后，新路径直接接管了 `self.project`
+却没有调填补，而 `utils.P_toSection()` 是纯构造函数、也不会填。
+结果是**导入完参数一片空白、三张图全空**——用户原话是"现在导入数据不再填写默认参数，
+导致无法计算"。表现是静默的：不报错、不缺数据，只是不计算。
+
+**所以**：任何新增的装载入口（拖拽、命令行、工程合并…）都必须调
+`_fill_missing_params()`，并顺带 `_sync_cfg()` / 刷新 `_update_title()` /
+`dlg_batch.set_result(...)`，否则界面与数据会不同步。
+
+⚠ `P.apply_batch(secs, only_missing=True, **fields)` **必须显式给出字段值**：
+不传的字段会被填成 `0`，而不是"跳过"。
+
+**护栏**：`TestParams.test_loaded_folder_can_be_filled_by_defaults`（锁死
+"load_folder 产物必须能被默认值填齐 + only_missing 不覆盖已有值"）。
+冒烟里的对应断言见 `tools/gui_smoke.py::_check_import_dialog`
+（走 `dlg._read_dir()` 而不是绕过它直接 merge，否则"漏处理"测不出来）。
+
+---
+
+### #23 第二条路径同样会漏「列序询问」：判不出来必须留痕
+
+同一个根因的另一半。#22 说的是**参数填补**漏了，这条说的是**列序询问**也漏了，
+而且症状更隐蔽：
+
+- `_load()` 里询问逻辑被 `not getattr(self, "_xy_asking", False)` 把门。
+  而 `_pick_and_load()` 会**再调一次 `_load()`**（嵌套），那时 `_xy_asking`
+  还是 `True` ⇒ 内层既不弹窗、也不记疑，数据按**默认列序**静默载入。
+- `ImportDataDialog._on_load_dir()` 原来调 `load_folder(...)` **不传 `xy_report`**，
+  判定结果被整个丢弃 ⇒ 同样不弹、不说。
+
+用户原话："自定义的坐标列序不弹出来"。后果是**导出的平面坐标两列可能颠倒**
+（水力结果不受影响——镜像是等距变换，见 #21），而界面上毫无线索。
+
+**现在的写法**（改之前先读懂）：
+
+1. `_load()` 里无论"问了没确认"还是"嵌套调用"，都记进 `self._xy_pending`；
+2. 询问逻辑抽成 `MainWindow._ask_xy_order(ask)`，返回 `True/False`，
+   用户关窗返回 `None`；
+3. `ImportDataDialog._read_dir()` **自己处理**：判不出来就当场问（调
+   `self._ask_xy_order`，可被冒烟替换），用户认了就立刻用新列序重读一遍；
+4. `_xy_pending` 非空 → 状态栏加一句可操作的话，
+   并且「计算设置 → 输入坐标列序」能看到当前判定 + 有个「坐标列序…」按钮
+   **手动复核**（这是"弹窗被关掉后还能救回来"的唯一入口，别删）。
+
+⚠ 每轮 `_load()` 开头都要 `self._xy_pending = None`，否则上一轮的存疑会累积。
+
+---
+
+### #24 冒烟 / 自检脚本的参数与离屏陷阱
+
+**坑 A：数据目录只认位置参数。**
+`tools/gui_smoke.py` 原本只读 `sys.argv[1]`，写成 `--data samples/demo_data`
+时会把 `--data` 当目录名——**不报错**，而是卡在扫描一个不存在的目录上，
+日志 **0 字节**、看着像"卡死/跑不完"。`main.py --selftest` 同样是 `argv[0]`。
+现在两处都支持 `--data X` / `--data=X` / 位置参数（见 `main._pick_data_dir`、
+`gui_smoke.resolve_data_dir`），且**指定了不存在的目录会明确报出来**，
+不再静默回退到别的数据源——否则"我以为跑的是 A 数据，其实是 B"。
+
+**坑 B：脚本结果不打印到 stdout。** `gui_smoke.py` 把报告写成 `_gui_smoke.txt`，
+只看 stdout 会以为它没跑。看输出要 `cat _gui_smoke.txt`。
+
+**坑 C：offscreen 下任何模态弹窗都会永久阻塞。**
+每一处会弹 `QMessageBox` / `QDialog` 的地方都必须先装替身，
+用完在 `finally` 里还原。已知必须替换的：`QMessageBox.question`（`_new_project()`
+→ `_maybe_save()` 会弹"要保存吗"）、`ImportDataDialog._prompt_resolution`、
+`ImportDataDialog._ask_xy_order`。
+
+**症状识别**：进程被 SIGTERM 杀掉、日志 0 字节 ⇒ 先怀疑模态弹窗或
+输出缓冲（用 `python -u` + `PYTHONUNBUFFERED=1` 排除后者）。
+
+**坑 D：冒烟跑完记得把状态还原。** 新加的检查若替换了 `win.project`
+（对话框返回的是 deepcopy），末尾必须 `win._load()` 复位，
+否则后续"纵剖面跟随列表选择"之类的断言会连带失败。
 
 ---
 

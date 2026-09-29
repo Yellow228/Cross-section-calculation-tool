@@ -195,6 +195,8 @@ class SettingsDialog(QDialog):
     changed = Signal()
     thresholdsChanged = Signal()
     exportChanged = Signal()
+    #: 用户点「坐标列序…」——载入时判不出列序、或想复核时的手动入口。
+    xyOrderRequested = Signal()
 
     # 界面下拉项 -> Config.csv_encoding
     CSV_ENCODINGS = ["utf-8-sig", "utf-8", "gbk"]
@@ -336,6 +338,28 @@ class SettingsDialog(QDialog):
         self.cmb_coord.currentIndexChanged.connect(
             lambda _: self.exportChanged.emit())
 
+        # ---- 输入列序（只读展示 + 手动复核入口）----
+        # 载入时自动判定，此处不给下拉框——**故意不让它成为"每批数据都要设一次"
+        # 的常规操作**（用户明确要求删掉原来那一项）。这里只留两个作用：
+        #   1. 让用户能看到当前是按哪种列序读的（不然判错了完全没线索）；
+        #   2. 判不出来时有个手动兜底，不用重开程序。
+        self.lbl_xy = QLabel("（尚未载入数据）")
+        self.lbl_xy.setWordWrap(True)
+        self.lbl_xy.setStyleSheet("color:#5F5E5A;")
+        self.btn_xy = QPushButton("坐标列序…")
+        self.btn_xy.setToolTip(
+            "复核 / 更正「输入文件前两列哪个是北坐标」。\n"
+            "程序内部一律按测量坐标系（x=北、y=东）计算，载入时会自动判定；\n"
+            "判不出来时（局部坐标、列头被删）会弹窗问一次，这里也可以再手动改。\n\n"
+            "⚠ 判错只影响导出的「平面坐标X/Y」两列是否颠倒，不影响水力结果。")
+        self.btn_xy.clicked.connect(self.xyOrderRequested.emit)
+
+        form_xy = QFormLayout()
+        form_xy.addRow("当前列序", self.lbl_xy)
+        form_xy.addRow("", self.btn_xy)
+        grp_xy = QGroupBox("输入坐标列序")
+        grp_xy.setLayout(form_xy)
+
         form_out = QFormLayout()
         form_out.addRow("导出坐标系", self.cmb_coord)
         form_out.addRow("CSV 编码", self.cmb_enc)
@@ -357,11 +381,16 @@ class SettingsDialog(QDialog):
         lay.addWidget(grp_calc)
         lay.addWidget(grp_raise)
         lay.addWidget(grp_hydro)
+        lay.addWidget(grp_xy)
         lay.addWidget(grp_out)
         lay.addWidget(self.lbl_hint)
         lay.addLayout(row)
 
     # ---------------- 行为 ----------------
+    def set_xy_status(self, text: str) -> None:
+        """刷新「输入坐标列序」那行的显示（主窗口载入后调用）。"""
+        self.lbl_xy.setText(text or "（尚未载入数据）")
+
     def reset_thresholds(self):
         self.spin_steep.setValue(0.4)
         self.spin_turn.setValue(0.05)
@@ -436,7 +465,10 @@ class XYOrderDialog(QDialog):
     """
 
     def __init__(self, items, parent=None):
-        """items: [(文件名, XYDecision), ...]，只应传入判不出来的那些。"""
+        """items: [(文件名, XYDecision), ...]，只应传入判不出来的那些。
+
+        也允许 `(文件名, None)`：手动复核时没有判定详情，只用文件名占位。
+        """
         super().__init__(parent)
         self.setWindowTitle("请确认输入文件的坐标列序")
         self.setMinimumWidth(520)
@@ -444,12 +476,18 @@ class XYOrderDialog(QDialog):
         lines = ["检测到以下文件无法自动判定「第 1 列是哪种坐标」：", ""]
         for fn, d in items:
             lines.append(f"  · {fn}")
-            lines.append(f"      {d.note}")
+            if d is not None:
+                lines.append(f"      {d.note}")
         lines.append("")
         lines.append("请对以上文件统一指定：")
         lbl = QLabel("\n".join(lines))
         lbl.setWordWrap(True)
         lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
+        self.lbl_hint = QLabel("")
+        self.lbl_hint.setWordWrap(True)
+        self.lbl_hint.setStyleSheet("color:#5F5E5A;")
+        self.lbl_hint.hide()
 
         # 两个单选放在同一个 widget 里 -> 自动互斥，不需要 QButtonGroup
         box = QWidget()
@@ -483,10 +521,17 @@ class XYOrderDialog(QDialog):
 
         lay = QVBoxLayout(self)
         lay.addWidget(lbl)
+        lay.addWidget(self.lbl_hint)
         lay.addWidget(box)
         lay.addWidget(self.chk_save)
         lay.addWidget(note)
         lay.addLayout(btn_row)
+
+    def set_current_hint(self, text: str) -> None:
+        """手动复核时，把"当前是按哪种列序读的"显示出来。"""
+        if text:
+            self.lbl_hint.setText(text)
+            self.lbl_hint.show()
 
     def swap(self) -> bool:
         """用户选的列序：True = 输入的第 1 列是北坐标。"""

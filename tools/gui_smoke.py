@@ -12,9 +12,21 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def resolve_data_dir() -> str:
-    """定数据目录：参数 > data/ > samples/demo_data/。"""
-    if len(sys.argv) > 1 and sys.argv[1].strip():
-        return sys.argv[1]
+    """定数据目录：`--data X` / 位置参数 > data/ > samples/demo_data/。
+
+    同时支持两种写法，是因为只认位置参数时，习惯写 `--data X` 的人
+    会被当成目录名 `--data` ——脚本不报错，而是卡在扫描一个不存在的
+    目录上，日志 0 字节、看起来像"跑不完"。这个坑真踩过。
+    """
+    argv = sys.argv[1:]
+    for i, a in enumerate(argv):
+        if a == "--data" and i + 1 < len(argv):
+            return argv[i + 1]
+        if a.startswith("--data="):
+            return a.split("=", 1)[1]
+    positional = [a for a in argv if not a.startswith("--")]
+    if positional and positional[0].strip():
+        return positional[0]
     real = os.path.join(ROOT, "data")
     if os.path.isdir(real):
         return real
@@ -32,6 +44,113 @@ def strip_html(s: str) -> str:
     """去掉 QLabel 里的富文本标签，便于打印到日志。"""
     import re
     return re.sub(r"<[^>]+>", "", s or "")
+
+
+def _check_import_dialog(win, out: list) -> None:
+    """走一遍新导入链路，并断言参数已被默认值填补。
+
+    ⚠ 这条断言的存在理由：`_load()` 与新导入窗口是**两条独立路径**，
+    只有 `_load()` 会调 `_fill_missing_params`。曾因新链路漏了这一步，
+    从界面导入数据后参数全空、三张图空白却不报任何错。
+    而本文件开头调的是 `_load()`，所以那种漏检在这里是"绿的"。
+
+    这里不弹真对话框（离屏下模态框会永久阻塞）：只构造 ImportDataDialog、
+    直接调内部载入与合并，再模拟主窗口 accept 后的收尾。
+
+    ⚠⚠ **所有能弹模态框的调用都要先换成替身**，否则离屏下会永久阻塞、
+    没有任何输出——看着像"程序卡死"，其实是等着一个永远不会有人点的按钮。
+    本函数里踩到的具体位置是 `win._new_project()`：它内部走 `_maybe_save()`，
+    而上一句 `_load()` 刚把工程标脏，于是弹出"是否保存"确认框。
+    `ImportDataDialog._merge_project` 遇到同名冲突时同样会弹框。
+    """
+    from app.import_dialog import ImportDataDialog
+    from core import params as P
+    from core.reader import load_folder
+    from PySide6.QtWidgets import QMessageBox
+
+    # ---- 替身：把会阻塞的模态框全部接住 ----
+    calls = {"mb": []}
+    _orig = (QMessageBox.question, QMessageBox.information, QMessageBox.critical,
+             QMessageBox.warning)
+
+    def _question(*a, **k):
+        calls["mb"].append(("question", a[1] if len(a) > 1 else ""))
+        return QMessageBox.Yes          # 「是否保存」→ 是；「确认删除」→ 是
+
+    def _info(*a, **k):
+        calls["mb"].append(("info", a[1] if len(a) > 1 else ""))
+        return QMessageBox.Ok
+
+    def _crit(*a, **k):
+        calls["mb"].append(("critical", a[1] if len(a) > 1 else ""))
+        return QMessageBox.Ok
+
+    QMessageBox.question = staticmethod(_question)
+    QMessageBox.information = staticmethod(_info)
+    QMessageBox.critical = staticmethod(_crit)
+    QMessageBox.warning = staticmethod(_crit)
+
+    # 合并冲突时 ImportDataDialog._prompt_resolution 自建 QMessageBox，
+    # 直接绕过它：一律返回「跳过」，语义与"用户不导入重复项"一致。
+    _orig_prompt = ImportDataDialog._prompt_resolution
+    ImportDataDialog._prompt_resolution = lambda self, t, x, opts: "跳过"
+    # 「坐标列序」确认框同理：真弹出来会永久阻塞。
+    # 返回 True = 输入第 1 列是北坐标（与自动判定失败时的默认一致）。
+    _orig_ask_xy = ImportDataDialog._ask_xy_order
+    ImportDataDialog._ask_xy_order = lambda self, ask: True
+
+    try:
+        _check_import_dialog_inner(win, out, ImportDataDialog, P, load_folder)
+    finally:
+        # 无论成败都要还原，别污染后面的断言
+        (QMessageBox.question, QMessageBox.information,
+         QMessageBox.critical, QMessageBox.warning) = _orig
+        ImportDataDialog._prompt_resolution = _orig_prompt
+        ImportDataDialog._ask_xy_order = _orig_ask_xy
+
+
+def _check_import_dialog_inner(win, out: list, ImportDataDialog, P, load_folder) -> None:
+    """`_check_import_dialog` 的实现体（弹窗替身已在外层装好）。"""
+    win._new_project()                       # 从空工程开始，确保是"导入"而非"重算"
+    dlg = ImportDataDialog(None, win.data_dir, win.cfg, win)
+
+    # 走对话框自己的载入链路（含列序询问），而不是绕过它直接 merge——
+    # 这样"导入路径会不会漏掉列序/参数处理"才真的被覆盖到。
+    new_project, _warnings, _note = dlg._read_dir()
+    dlg._merge_project(new_project)
+    dlg._refresh_tree()
+
+    n_ln = len(dlg.project.profile_lines)
+    n_sec = sum(len(ln.sections) for ln in dlg.project.profile_lines)
+    out.append(f"导入窗口 OK：{n_ln} 条纵断面线 / {n_sec} 个横断面，树 {dlg.tree.topLevelItemCount()} 项")
+    assert dlg.tree.topLevelItemCount() == n_ln, \
+        f"树顶层项数 {dlg.tree.topLevelItemCount()} 与分组数 {n_ln} 不符"
+
+    # 模拟主窗口在 accept 之后做的事（含本次新增的参数填补）
+    win.project = dlg.get_project()
+    secs = win.project.all_sections()
+    assert P.missing_params(secs), \
+        "前提不成立：load_folder 出来的断面参数本就该是空的，否则这条断言测不到东西"
+    filled = win._fill_missing_params(secs)
+    out.append(f"导入后参数填补 OK：填补 {filled} 个断面")
+    assert filled > 0, f"应填补若干断面，实际填补 {filled} 个"
+    left = P.missing_params(secs)
+    assert not left, f"填补后仍有 {len(left)} 个断面参数为空：{left[:5]}"
+    out.append("导入后断面参数无缺失 OK（三张图不会再是空白）")
+
+    # 真正算一遍，确认不是"参数填了但算不出来"
+    win._solve_all()
+    n_res = len(win.results)
+    out.append(f"导入链路求解 OK：{n_res} 个断面出结果")
+    assert n_res > 0, "导入链路求解后没有任何结果"
+
+    # ⚠ 必须把主窗口恢复成干净状态再交还，否则后续断言会串味：
+    #   本检查把 win.project 换成了导入窗口里那份 deepcopy 副本，
+    #   而它没经过主窗口的列表/视图刷新——后续"切列表看纵剖面"之类的断言
+    #   会因为 line_index 对不上而假红。（实测踩到过。）
+    win._load()
+
+
 sys.path.insert(0, os.path.join(ROOT, "src"))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -61,6 +180,13 @@ try:
     win.data_dir = resolve_data_dir()
     win._load()
     out.append("_load OK: " + win.lbl_status.text())
+
+    # ---- 新导入链路（「文件 → 导入excel数据」）的回归护栏 ----
+    # 起因：PR #3 把载入入口换成 ImportDataDialog 后，新链路漏了"参数用默认值填补"
+    # 这一步。而本节开头直接调 `win._load()`（老路径）——老路径里有填补，
+    # 所以冒烟照样全绿，新链路却从界面导入后三张图一片空白。
+    # 这里显式走一遍新链路，并断言参数不再为空，堵住这类"两条路径只测一条"的漏。
+    _check_import_dialog(win, out)
 
     # 逐个切换纵断面线与断面，确保每条都能画出来
     for li in range(win.lst_lines.count()):
