@@ -607,6 +607,14 @@ def load_folder(folder: str, cfg: Optional[Config] = None,
     if not loaded:
         raise ValueError(f"{folder} 下没有可解析的 xlsx 断面文件")
 
+    # 断面重名必须在**分组之前**解决，原因有两个：
+    #   1. 分组、桩号、attach_params 全都按名字办事，重名会一路错到底；
+    #   2. 结果字典 `MainWindow.results` 就是 `{断面名: 结果}`，
+    #      重名会让后载入的**静默覆盖**先载入的——导出 CSV 里两个断面
+    #      引用同一份结果、一维推算取错设计水位，且不报错、图上看不出来。
+    # 纵断面线名早就有去重（`_dedupe_names`），断面名一直没有，这是补上那一半。
+    _dedupe_section_names(loaded, warnings)
+
     lines = _build_lines(loaded, cfg, warnings)
 
     if param_path:
@@ -624,6 +632,58 @@ def load_folder(folder: str, cfg: Optional[Config] = None,
                 warnings.extend(sec.validate())
 
     return Project(profile_lines=lines), warnings
+
+
+def _dedupe_section_names(loaded: list[tuple[str, "ParsedBlocks"]],
+                          warnings: list[str]) -> list[tuple[str, str]]:
+    """跨文件重名的横断面自动改名，返回 [(原名, 新名), ...]。
+
+    **只在真的重名时改名**（方案 A）：不重名的数据一个字符都不动，
+    所以绝大多数工程完全无感，也不会把下游按断面名对账的脚本弄断链。
+
+    后缀用 `@文件名`（如 `secA-1@b`）而不是 `-段2`：
+    断面重名基本都发生在**不同文件各有一块同名断面**的场景，
+    带上文件来源才能让用户看出"这两个 secA-1 分别来自哪"。
+
+    ⚠ 必须同时改 `sec.params.name`。两者在 `params.ensure_params` 里
+      有"保持一致"的约定，且工程文件里各存一份——只改一边会让
+      参数面板/导出按旧名去找，改名反而制造出"参数丢失"。
+    """
+    counts: dict[str, int] = {}
+    for _stem, parsed in loaded:
+        for sec in parsed.sections:
+            counts[sec.name] = counts.get(sec.name, 0) + 1
+    dupes = {n for n, c in counts.items() if c > 1}
+    if not dupes:
+        return []
+
+    renamed: list[tuple[str, str]] = []
+    taken: set[str] = set()
+    for stem, parsed in loaded:
+        for sec in parsed.sections:
+            if sec.name not in dupes:
+                taken.add(sec.name)
+    for stem, parsed in loaded:
+        for sec in parsed.sections:
+            if sec.name not in dupes:
+                continue
+            base = f"{sec.name}@{stem}"
+            new_name, k = base, 2
+            while new_name in taken:            # 同文件内原名重复时补序号
+                new_name = f"{base}-{k}"
+                k += 1
+            taken.add(new_name)
+            renamed.append((sec.name, new_name))
+            sec.name = new_name
+            if sec.params is not None:
+                sec.params.name = new_name
+
+    if renamed:
+        detail = "、".join(f"{a} → {b}" for a, b in renamed[:5])
+        more = f"（共 {len(renamed)} 个）" if len(renamed) > 5 else ""
+        warnings.append(
+            f"检测到重名横断面，已自动改名以免互相覆盖：{detail}{more}")
+    return renamed
 
 
 def _build_lines(loaded: list[tuple[str, ParsedBlocks]], cfg: Config,

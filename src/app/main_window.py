@@ -119,6 +119,9 @@ class MainWindow(QMainWindow):
         self.results: dict[str, SectionResult] = {}
         self.infos: dict[str, TerrainInfo] = {}
         self.warnings: list[str] = []
+        #: 最近一次求解中，一维推算报出的问题（二分求根贴边/不收敛）。
+        #: 这些情况原来**静默**返回不可信水位，必须在界面上说出来。
+        self.hydro_warnings: list[str] = []
 
         # ---- 工程文件状态 ----
         self.current_path: str | None = None   # 当前 .dmprj 路径；None = 从未保存
@@ -884,6 +887,8 @@ class MainWindow(QMainWindow):
                     f"{filled} 个断面，**请核实后按实际取值修改**。")
         if warnings:
             msg += "　告警：" + "；".join(warnings[:3])
+        if getattr(self, "hydro_warnings", None):
+            msg += "　⚠ " + "；".join(self.hydro_warnings[:2])
         msg += self._xy_note
         self.lbl_status.setText(msg)
         self._set_dirty(True)      # 刚载入的数据还没保存成工程文件
@@ -894,13 +899,17 @@ class MainWindow(QMainWindow):
             return
         self.results.clear()
         self.infos.clear()
+        # 一维推算的静默失败（二分求根贴边/不收敛）会写进这里，
+        # 不能只算不报——那种情况结果是错的却长得像正常水位。
+        hydro_warnings: list[str] = []
         for ln in self.project.profile_lines:
             for sec in ln.sections:
                 res, info = solve_section(sec, self.cfg)
                 self.results[sec.name] = res
                 self.infos[sec.name] = info
             # 断面都算完后，推算一维水面线
-            solve_profile_line(ln, self.cfg, self.results)
+            solve_profile_line(ln, self.cfg, self.results, warnings=hydro_warnings)
+        self.hydro_warnings = hydro_warnings
 
     def _recalc(self):
         if self.project is None:
@@ -908,7 +917,10 @@ class MainWindow(QMainWindow):
         self._sync_cfg()
         self._solve_all()
         self._refresh_current_views()
-        self.lbl_status.setText("已按当前设置重新计算。")
+        msg = "已按当前设置重新计算。"
+        if getattr(self, "hydro_warnings", None):
+            msg += "　⚠ " + "；".join(self.hydro_warnings[:2])
+        self.lbl_status.setText(msg)
 
     def _on_params_changed(self):
         self._recalc()

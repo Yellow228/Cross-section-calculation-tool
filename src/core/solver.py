@@ -74,10 +74,16 @@ def solve_section(sec: Section, cfg: Config) -> tuple[SectionResult, TerrainInfo
     return result, info
 
 
-def solve_profile_line(line: ProfileLine, cfg: Config, results: dict) -> None:
-    """求解整个纵断面线的一维水动力推算。"""
+def solve_profile_line(line: ProfileLine, cfg: Config, results: dict,
+                       warnings: Optional[list[str]] = None) -> None:
+    """求解整个纵断面线的一维水动力推算。
+
+    warnings：出参。一维推算的二分求根贴边/不收敛会写进这里——
+    那些情况原本是**静默**返回一个不可信的水位，界面上完全看不出来。
+    """
     if line.hydro1d_enabled:
-        line.hydro1d_levels = compute_hydro1d_profile(line, cfg, results)
+        line.hydro1d_levels = compute_hydro1d_profile(line, cfg, results,
+                                                      warnings=warnings)
     else:
         line.hydro1d_levels = [float('nan')] * len(line.sections)
 

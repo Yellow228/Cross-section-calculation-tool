@@ -28,6 +28,10 @@ class HydroNode:
     V: float       # 流速
     Fr: float      # 弗劳德数
     alpha: float = 1.0  # 动能修正系数
+    #: 流量模数（输水能力）。**构造时按分区算好**，不能在这里现算——
+    #: 分区要 cfg + TerrainInfo，而 dataclass 字段拿不到它们。
+    #: 分区口径必须与 `rating.py`（H~Q 曲线）一致，见 `zone_conductance`。
+    K: float = 0.0
 
     @property
     def H(self) -> float:
@@ -35,20 +39,42 @@ class HydroNode:
         return self.Z + self.alpha * (self.V ** 2) / (2 * 9.81)
 
     @property
-    def K(self) -> float:
-        """流量模数 (输水能力)"""
-        n = self.sec.params.roughness
-        if not n or math.isnan(n):
-            n = 0.03
-        return self.A * (self.R ** (2/3)) / n
-
-    @property
     def Sf(self) -> float:
         """摩阻比降"""
-        k = self.K
-        if k <= 0:
+        if self.K <= 0:
             return 0.0
-        return (self.Q / k) ** 2
+        return (self.Q / self.K) ** 2
+
+
+def zone_conductance(sec: Section, Z: float, cfg, A_sub, P_sub
+                     ) -> tuple[float, list[float]]:
+    """按分区求流量模数，返回 (K_tot, [K_i, ...])。
+
+    **这是唯一的口径**：`rating.py` 的 H~Q 曲线、动能修正系数 α、以及
+    本模块的摩阻比降 Sf，都从这里取 K，三处必须一致。
+
+    曾用 `A·R^(2/3)/n_uniform`（整断面一次算、统一糙率）算 Sf，
+    而 H~Q 曲线用的是 `Σ A_i·R_i^(2/3)/n_i`（分区糙率）——
+    同一个断面两套糙率。用户填了左右滩糙率时，两条链路的结果系统性偏离
+    （实测 K 可差 50%，Sf 差 4 倍），而且不报错、图上看不出来。
+    """
+    k_tot = 0.0
+    k_sub: list[float] = []
+    n_zone = len(A_sub)
+    for i in range(n_zone):
+        A_i = A_sub[i]
+        P_i = P_sub[i]
+        if A_i > 1e-6 and P_i > 1e-6:
+            R_i = A_i / P_i
+            n_i = sec.params.roughness_for_zone(i, n_zone)
+            if not n_i or math.isnan(n_i):
+                n_i = 0.03
+            k_i = A_i * (R_i ** (2/3)) / n_i
+        else:
+            k_i = 0.0
+        k_sub.append(k_i)
+        k_tot += k_i
+    return k_tot, k_sub
 
 
 def get_node_state(sec: Section, Z: float, Q: float, dist: float, cfg, info=None) -> HydroNode:
@@ -101,26 +127,24 @@ def get_node_state(sec: Section, Z: float, Q: float, dist: float, cfg, info=None
     V = Q / A
     Fr = V / math.sqrt(9.81 * (A / B))
 
+    # 流量模数：**无条件**按分区求（与 rating.py 的 H~Q 曲线同口径）。
+    # 曾跟着 `kinetic_alpha_auto` 开关走，于是关掉 α 自动计算时
+    # 两条链路又变回两套糙率——这是个独立的 bug，别再把 K 挂到那个开关上。
+    k_tot, k_sub = zone_conductance(sec, Z, cfg, A_sub, P_sub)
+
     alpha = cfg.kinetic_alpha
     if cfg.kinetic_alpha_auto and cfg.compound_mode and len(A_sub) > 1:
-        # 动态计算 alpha = sum(K_i^3 / A_i^2) / (K_tot^3 / A_tot^2)
-        k_tot = 0.0
+        # alpha = sum(K_i^3 / A_i^2) / (K_tot^3 / A_tot^2)，复用上面同一份 K_i
         sum_k3_a2 = 0.0
-        for i in range(len(A_sub)):
+        for i, K_i in enumerate(k_sub):
             A_i = A_sub[i]
-            P_i = P_sub[i]
-            if A_i > 1e-6 and P_i > 1e-6:
-                R_i = A_i / P_i
-                n_i = sec.params.roughness_for_zone(i, len(A_sub))
-                if not n_i or math.isnan(n_i):
-                    n_i = 0.03
-                K_i = A_i * (R_i ** (2/3)) / n_i
-                k_tot += K_i
+            if A_i > 1e-6:
                 sum_k3_a2 += (K_i ** 3) / (A_i ** 2)
         if k_tot > 1e-6 and A > 1e-6:
             alpha = sum_k3_a2 / ((k_tot ** 3) / (A ** 2))
 
-    return HydroNode(sec=sec, dist=dist, Q=Q, Z=Z, A=A, B=B, R=R, V=V, Fr=Fr, alpha=alpha)
+    return HydroNode(sec=sec, dist=dist, Q=Q, Z=Z, A=A, B=B, R=R, V=V, Fr=Fr,
+                     alpha=alpha, K=k_tot)
 
 
 
@@ -148,6 +172,66 @@ def compute_critical_depth(sec: Section, Q: float, z_min: float, z_max: float) -
     return (low + high) / 2
 
 
+def _bisect_detail(low: float, high: float, f, tol: float,
+                   rising: bool) -> tuple[float, dict]:
+    """二分求根，返回 (解, 诊断)。
+
+    ⚠ **为什么必须带诊断**：区间是固定死的 `[min(z)+0.01, max(z)+10]`。
+    下游水位很高、回水上溯超过 `max(z)+10` 时，真实解落在区间之外，
+    二分只会一路贴到边界并把**边界附近的假解**当答案返回——不报错、
+    也没有任何提示，用户拿到的是一个平白低十几米的水位。
+
+    判据（重要，别退回"看解离边界多远"的写法）：
+    二分只要没提前收敛，区间宽度就会被压到 <= tol 才退出。此时解的
+    位置距离原边界**恰好还有约 tol/2**（因为 mid 永远取区间中点），
+    所以任何以 tol 为量级的绝对容差都测不出"贴边"——必须改成：
+        **区间耗尽（宽度 <= tol）且残差未收敛** => 真解在区间外，结果不可信。
+    纯残差发散（例如 1e14）也会落进这个分支，因为区间同样被耗尽。
+    反之，真解恰好靠近边界但**确实收敛**时，`converged` 为真，不算贴边。
+
+    rising=True 表示 f 随 x 递增（f>0 说明猜大了，往小收）。
+    """
+    orig_low, orig_high = low, high
+    x = (low + high) / 2.0
+    f_x = f(x)
+    exhausted = False
+    for _ in range(50):
+        mid = (low + high) / 2.0
+        f_mid = f(mid)
+        x, f_x = mid, f_mid
+        if abs(f_mid) < tol:
+            break
+        if (high - low) < tol:
+            exhausted = True
+            break
+        if (f_mid > 0) == rising:
+            high = mid
+        else:
+            low = mid
+
+    converged = abs(f_x) < tol
+    clipped = exhausted and not converged
+    # 兜底：解因浮点原因正好落在原区间端点上，同样视为贴边。
+    span = orig_high - orig_low
+    margin = 1e-9 * max(1.0, abs(span))
+    at_lower = abs(x - orig_low) <= max(margin, 0.5 * tol)
+    at_upper = abs(x - orig_high) <= max(margin, 0.5 * tol)
+    if at_lower or at_upper:
+        clipped = True
+
+    diag = {
+        "converged": converged,
+        "residual": f_x,
+        "exhausted": exhausted,
+        "at_lower": at_lower,
+        "at_upper": at_upper,
+        "clipped": clipped,
+        "bracket": (low, high),
+        "z_bounds": (orig_low, orig_high),
+    }
+    return x, diag
+
+
 def standard_step_method_subcritical(
     sec_down: Section,
     Z_down: float,
@@ -160,7 +244,8 @@ def standard_step_method_subcritical(
     z_max: float,
     cfg,
     info_down=None,
-    info_up=None
+    info_up=None,
+    diag: Optional[dict] = None,
 ) -> float:
     """
     缓流：从下游推上游 (标准步长法)
@@ -188,17 +273,11 @@ def standard_step_method_subcritical(
 
     # 使用割线法求根 (Bisection 在此处可能符号变化不明确，因单调性复杂)
     # 对于缓流，H_up 随 Z_up 严格单调增加
-    low, high = z_min, z_max
-    for _ in range(50):
-        mid = (low + high) / 2
-        diff = energy_diff(mid)
-        if abs(diff) < 1e-4 or (high - low) < 1e-4:
-            return mid
-        if diff > 0:
-            high = mid
-        else:
-            low = mid
-    return (low + high) / 2
+    # diff = H_up - (H_down + hf + he) 随 Z_up 递增 -> rising=True
+    x, d = _bisect_detail(z_min, z_max, energy_diff, 1e-4, rising=True)
+    if diag is not None:
+        diag.update(d)
+    return x
 
 
 def standard_step_method_supercritical(
@@ -213,7 +292,8 @@ def standard_step_method_supercritical(
     z_max: float,
     cfg,
     info_up=None,
-    info_down=None
+    info_down=None,
+    diag: Optional[dict] = None,
 ) -> float:
     """
     急流：从上游推下游 (标准步长法)
@@ -237,22 +317,12 @@ def standard_step_method_supercritical(
         # 能量方程: H_up = H_down + hf + he
         return node_u.H - (node_d.H + hf + he)
 
-    low, high = z_min, z_max
-    for _ in range(50):
-        mid = (low + high) / 2
-        diff = energy_diff(mid)
-        if abs(diff) < 1e-4 or (high - low) < 1e-4:
-            return mid
-        # 急流中，H 随 Z 的变化单调性在临界水深附近反转
-        # 一般在急流区 (Z < Zc)，Z增加，H减小
-        # target_func(Z) = H_up - (H_down + hf + he)
-        # 当 Z_down_guess 增加时，H_down 减小，hf 减小，因此 diff 增加
-        # 所以 diff 是随 Z 递增的。
-        if diff > 0:
-            high = mid
-        else:
-            low = mid
-    return (low + high) / 2
+    # 原逻辑：diff > 0 -> high = mid，与缓流同一个走向（rising=True）。
+    # 这里**逐字保持原行为**，只把它换成带诊断的实现，不改数值。
+    x, d = _bisect_detail(z_min, z_max, energy_diff, 1e-4, rising=True)
+    if diag is not None:
+        diag.update(d)
+    return x
 
 
 def downstream_index(sections: list[Section], infos: list) -> int:
@@ -270,8 +340,14 @@ def downstream_index(sections: list[Section], infos: list) -> int:
     return idx
 
 
-def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None) -> list[float]:
-    """计算整条纵断面线的一维水动力水位，返回推算的水位列表，与 sections 等长"""
+def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
+                            warnings: list[str] = None) -> list[float]:
+    """计算整条纵断面线的一维水动力水位，返回推算的水位列表，与 sections 等长。
+
+    warnings：出参。传入一个 list 时，会把"二分求根贴边/不收敛"这类
+    **静默失败**写进去（core 层不认识界面，所以用出参照搬，
+    与 `reader.load_folder` 的 `xy_report` 同一套路）。
+    """
     sections = line.sections
     n = len(sections)
     results = results or {}
@@ -322,6 +398,12 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None) -> lis
         regime = "subcritical"
 
     # 判断方向是否需要倒序遍历 (即索引 0 是下游还是 n-1 是下游)
+    # 每次二分求根的诊断都攒在这里，最后统一汇总成一句可读的告警。
+    _diags: list[tuple[str, dict]] = []
+
+    def _note(i: int, d: dict) -> None:
+        _diags.append((sections[i].name, d))
+
     if ds_idx == 0:
         # 索引 0 是下游
         if regime == "subcritical":
@@ -333,12 +415,14 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None) -> lis
                 z_min_up = min(sec_up.z) + 0.01
                 z_max_up = max(sec_up.z) + 10.0
 
+                d: dict = {}
                 Z_up = standard_step_method_subcritical(
                     sec_down, res_levels[i-1], Qs[i-1], dists[i-1],
                     sec_up, Qs[i], dists[i],
                     z_min_up, z_max_up, cfg,
-                    info_down=infos[i-1], info_up=infos[i]
+                    info_down=infos[i-1], info_up=infos[i], diag=d
                 )
+                _note(i, d)
                 Z_crit = compute_critical_depth(sec_up, Qs[i], z_min_up, z_max_up)
                 res_levels[i] = max(Z_up, Z_crit)
         else:
@@ -350,12 +434,14 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None) -> lis
                 z_min_down = min(sec_down.z) + 0.01
                 z_max_down = max(sec_down.z) + 10.0
 
+                d = {}
                 Z_down = standard_step_method_supercritical(
                     sec_up, res_levels[i+1], Qs[i+1], dists[i+1],
                     sec_down, Qs[i], dists[i],
                     z_min_down, z_max_down, cfg,
-                    info_up=infos[i+1], info_down=infos[i]
+                    info_up=infos[i+1], info_down=infos[i], diag=d
                 )
+                _note(i, d)
                 Z_crit = compute_critical_depth(sec_down, Qs[i], z_min_down, z_max_down)
                 res_levels[i] = min(Z_down, Z_crit)
     else:
@@ -369,12 +455,14 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None) -> lis
                 z_min_up = min(sec_up.z) + 0.01
                 z_max_up = max(sec_up.z) + 10.0
 
+                d = {}
                 Z_up = standard_step_method_subcritical(
                     sec_down, res_levels[i+1], Qs[i+1], dists[i+1],
                     sec_up, Qs[i], dists[i],
                     z_min_up, z_max_up, cfg,
-                    info_down=infos[i+1], info_up=infos[i]
+                    info_down=infos[i+1], info_up=infos[i], diag=d
                 )
+                _note(i, d)
                 Z_crit = compute_critical_depth(sec_up, Qs[i], z_min_up, z_max_up)
                 res_levels[i] = max(Z_up, Z_crit)
         else:
@@ -386,13 +474,50 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None) -> lis
                 z_min_down = min(sec_down.z) + 0.01
                 z_max_down = max(sec_down.z) + 10.0
 
+                d = {}
                 Z_down = standard_step_method_supercritical(
                     sec_up, res_levels[i-1], Qs[i-1], dists[i-1],
                     sec_down, Qs[i], dists[i],
                     z_min_down, z_max_down, cfg,
-                    info_up=infos[i-1], info_down=infos[i]
+                    info_up=infos[i-1], info_down=infos[i], diag=d
                 )
+                _note(i, d)
                 Z_crit = compute_critical_depth(sec_down, Qs[i], z_min_down, z_max_down)
                 res_levels[i] = min(Z_down, Z_crit)
 
+    if warnings is not None:
+        warnings.extend(_hydro1d_warnings(line, _diags))
     return res_levels
+
+
+def _hydro1d_warnings(line: ProfileLine, diags: list[tuple[str, dict]]
+                      ) -> list[str]:
+    """把二分求根的诊断汇总成用户能照做的告警。
+
+    只报**真出了事**的断面：要么解贴边（真解可能在区间外，水位不可信），
+    要么残差没收敛（迭代用尽仍不满足能量方程）。两种情况原实现都静默返回
+    一个数字，用户完全没有线索。
+    """
+    clipped = [(nm, d) for nm, d in diags if d.get("clipped")]
+    unconv = [(nm, d) for nm, d in diags if not d.get("converged")]
+
+    out: list[str] = []
+    if clipped:
+        names = "、".join(nm for nm, _ in clipped[:5])
+        more = f" 等 {len(clipped)} 个" if len(clipped) > 5 else ""
+        lo, hi = clipped[0][1].get("z_bounds", (float("nan"), float("nan")))
+        where = "下界（最低测点附近）" if clipped[0][1].get("at_lower") \
+            else "上界（最高测点 +10 m）"
+        out.append(
+            f"一维推算：{names}{more} 断面的水位解贴在搜索区间{where}，"
+            f"结果不可信——通常表示该断面的回水高度超出了 "
+            f"[{lo:.2f}, {hi:.2f}] 这个预设区间。"
+            f"请检查下游边界水位/流量是否合理，必要时调整断面数据的测点范围。")
+    if unconv:
+        names = "、".join(nm for nm, _ in unconv[:5])
+        more = f" 等 {len(unconv)} 个" if len(unconv) > 5 else ""
+        worst = max(abs(d.get("residual") or 0.0) for _, d in unconv)
+        out.append(
+            f"一维推算：{names}{more} 断面未收敛（能量方程残差最大 {worst:.4g} m），"
+            f"水位结果仅供参考。常见原因是断面间距过大或几何突变。")
+    return out
