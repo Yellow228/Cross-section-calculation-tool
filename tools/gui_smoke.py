@@ -231,7 +231,7 @@ try:
     file_acts = [a.text() for a in win.menu_file.actions() if a.text()]
     out.append(f"文件菜单: {file_acts}")
     for need in ("新建工程", "打开工程…", "保存", "另存为…",
-                 "载入数据目录…", "导出结果…", "退出"):
+                 "导入excel数据…", "重新计算", "导出结果…", "退出"):
         assert need in file_acts, f"文件菜单缺少「{need}」"
     out.append("文件菜单项齐全 OK")
 
