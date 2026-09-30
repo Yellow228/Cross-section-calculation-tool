@@ -33,7 +33,7 @@ class ParamPanel(QWidget):
         self.lbl_name = QLabel(NAN_TEXT)
         self.o_rough = make_spin(0.001, 0.2, 0.005, 3)
         self.o_slope = make_spin(0.00001, 0.5, 0.0005, 5)
-        self.o_q = make_spin(0.0, 1e6, 10.0, 2)
+        self.o_q = make_spin(0.0, 1e6, 10.0, 2, suffix=" m³/s")
         self.o_main = make_spin(0.001, 0.2, 0.005, 3)
         self.o_left = make_spin(0.001, 0.2, 0.005, 3)
         self.o_right = make_spin(0.001, 0.2, 0.005, 3)
