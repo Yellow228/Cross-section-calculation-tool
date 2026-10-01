@@ -233,7 +233,6 @@ def analyze_terrain(sec: Section, cfg: Config) -> TerrainInfo:
     # 岸顶必须按**最终**深泓点重新划分；深泓点一动，"左岸"包含的测点集合就变了。
     info.zmax, info.zmax_idx, info.ymax, info.ymax_idx = _peaks_around(z, di)
 
-    # MATLAB: ZYmin = min([Zmax, Ymax])，忽略 NaN
     cand = [v for v in (info.zmax, info.ymax) if v == v]
     info.zymin = min(cand) if cand else d
 
