@@ -24,6 +24,15 @@ class ImportDataDialog(QDialog):
         # 右栏：从目录新读出的待导入数据
         self.new_project = Project()
 
+        #: 打开本窗口那一刻的断面快照，供「撤销删除」回滚。
+        #:
+        #: ⚠ 为什么非要有这份快照：左栏的删除是**立即生效**的
+        #:   （直接改主界面那个工程对象，不走 `accept()` 闸门），
+        #:   而窗口又是可以取消的——用户删错了随手关掉窗口，
+        #:   删除**不会**跟着还原，且没有任何提示。
+        #:   既然要做"立即生效"，就必须自己留一条回退的路。
+        self._baseline_lines = copy.deepcopy(self.current_project.profile_lines)
+
         self.data_dir = data_dir
         self.cfg = cfg
         #: 最近一次载入的「输入坐标列序」判定明细。
@@ -50,9 +59,22 @@ class ImportDataDialog(QDialog):
         self.btn_delete_left = QPushButton("删除已有断面")
         self.btn_delete_left.clicked.connect(self._on_delete_left)
 
+        #: 左栏删除立即生效、关窗也不还原，所以必须给一条回退的路。
+        #: 初始禁用：还没删过东西时没什么可撤销的。
+        self.btn_undo_delete = QPushButton("撤销删除")
+        self.btn_undo_delete.setToolTip(
+            "把已有工程恢复到打开本窗口时的状态。\n"
+            "左栏的删除是立即生效的，关闭本窗口也不会撤销——删错了用这里找回。")
+        self.btn_undo_delete.setEnabled(False)
+        self.btn_undo_delete.clicked.connect(self._on_undo_delete)
+
+        left_btn_row = QHBoxLayout()
+        left_btn_row.addWidget(self.btn_delete_left)
+        left_btn_row.addWidget(self.btn_undo_delete)
+
         left_layout = QVBoxLayout()
         left_layout.addWidget(self.left_tree)
-        left_layout.addWidget(self.btn_delete_left)
+        left_layout.addLayout(left_btn_row)
 
         # 右栏 UI
         self.right_tree = QTreeWidget()
@@ -133,8 +155,9 @@ class ImportDataDialog(QDialog):
 
         reply = QMessageBox.question(
             self, "确认删除",
-            "确定要删除已有工程的 " + "、".join(parts) + " 吗？\n"
-            "（删除后将立即生效并从主界面移除）",
+            "确定要删除已有工程的 " + "、".join(parts) + " 吗？\n\n"
+            "⚠ 删除会立即生效并从主界面移除，关闭本窗口也不会还原。\n"
+            "删错了可以点「撤销删除」回到打开本窗口时的状态。",
             QMessageBox.Yes | QMessageBox.No)
         if reply == QMessageBox.No:
             return
@@ -148,15 +171,47 @@ class ImportDataDialog(QDialog):
                 self.current_project.profile_lines.remove(ln)
 
         self._refresh_left_tree()
+        self.btn_undo_delete.setEnabled(True)
+        self._sync_to_parent()
 
-        # Immediate refresh on the parent window
-        if self.parent():
-            parent = self.parent()
-            parent._set_dirty(True)
-            parent._solve_all()
-            parent._refresh_line_list()
-            parent._refresh_current_views()
-            parent.param_panel.set_sections(self.current_project.all_sections())
+    def _on_undo_delete(self):
+        """把已有工程回滚到打开本窗口时的状态。
+
+        ⚠ 为什么是"整份快照回滚"而不是"记住删了哪些、再插回去"：
+          删除只会让断面/分组变少，整份还原一定正确；而"插回去"要还原
+          它在列表里的**位置**和**对象身份**，中间只要还发生过别的改动
+          （比如又删了另一个分组）就会错位。整份回滚没有这个风险。
+        """
+        self.current_project.profile_lines = copy.deepcopy(self._baseline_lines)
+        self._refresh_left_tree()
+        self.btn_undo_delete.setEnabled(False)   # 已回到基线，没什么可再撤销
+        self._sync_to_parent()
+
+    def _sync_to_parent(self) -> None:
+        """把左栏对工程的改动同步到主界面（重算 + 刷新三处视图）。
+
+        ⚠ 左栏的删除/撤销是**立即生效**的，不走 `accept()` 那道闸门，
+          所以必须在这里主动通知主界面；漏掉的话数据变了、界面还是旧的。
+          （`_merge_project` 不需要这一步：它只在 `_on_apply` 里被调用，
+            紧接着就 `accept()`，由 `_pick_and_load` 统一收尾。）
+
+        方法逐个用 `getattr` 探一遍：本对话框在测试里可能被挂到非
+        MainWindow 的 parent 上，不该因为缺一个私有方法就整条崩掉。
+        生产路径上 parent 一定是 MainWindow，这些方法都在。
+        """
+        parent = self.parent()
+        if parent is None:
+            return
+        dirty = getattr(parent, "_set_dirty", None)
+        if callable(dirty):
+            dirty(True)
+        for name in ("_solve_all", "_refresh_line_list", "_refresh_current_views"):
+            fn = getattr(parent, name, None)
+            if callable(fn):
+                fn()
+        panel = getattr(parent, "param_panel", None)
+        if panel is not None and hasattr(panel, "set_sections"):
+            panel.set_sections(self.current_project.all_sections())
 
     def _on_delete_right(self):
         selected_items = self.right_tree.selectedItems()

@@ -100,7 +100,7 @@ def _check_import_dialog(win, out: list) -> None:
     ImportDataDialog._ask_xy_order = lambda self, ask: True
 
     try:
-        _check_import_dialog_inner(win, out, ImportDataDialog, P, load_folder)
+        _check_import_dialog_inner(win, out, ImportDataDialog, P, load_folder, calls)
     finally:
         # 无论成败都要还原，别污染后面的断言
         (QMessageBox.question, QMessageBox.information,
@@ -109,7 +109,8 @@ def _check_import_dialog(win, out: list) -> None:
         ImportDataDialog._ask_xy_order = _orig_ask_xy
 
 
-def _check_import_dialog_inner(win, out: list, ImportDataDialog, P, load_folder) -> None:
+def _check_import_dialog_inner(win, out: list, ImportDataDialog, P, load_folder,
+                               calls: dict) -> None:
     """`_check_import_dialog` 的实现体（弹窗替身已在外层装好）。"""
     win._new_project()                       # 从空工程开始，确保是"导入"而非"重算"
     dlg = ImportDataDialog(None, win.data_dir, win.cfg, win)
@@ -144,8 +145,65 @@ def _check_import_dialog_inner(win, out: list, ImportDataDialog, P, load_folder)
     out.append(f"导入链路求解 OK：{n_res} 个断面出结果")
     assert n_res > 0, "导入链路求解后没有任何结果"
 
+    # ---- 左栏「删除立即生效」必须有「撤销删除」兜底 ----
+    # 起因：双栏重构去掉了 `deepcopy` 沙箱，左栏删除改成**直接改主工程对象**，
+    # 于是它立即生效、而且关窗/取消都**不会**还原。既然选了"立即生效"，
+    # 就必须有一条回退的路——这条断言防止「撤销删除」被后人顺手删掉。
+    #
+    # ⚠ 顺序很重要：快照发生在**打开对话框那一刻**，所以"手动设定"必须在
+    #    构造对话框**之前**打好记号；反过来写测的就不是撤销，而是在测
+    #    "快照之后新加的改动会不会被回滚"（第一次就写反了，红在这里）。
+    victim = win.project.profile_lines[0].sections[0]
+    victim.thalweg_manual = 1
+
+    dlg2 = ImportDataDialog(win.project, win.data_dir, win.cfg, win)
+    n_before = len(win.project.all_sections())
+    assert n_before > 0, "前提不成立：要测撤销，得先有断面可删"
+    assert not dlg2.btn_undo_delete.isEnabled(), \
+        "还没删过任何东西，「撤销删除」不该是可用的"
+
+    dlg2._refresh_left_tree()
+    target = None
+    for gi in range(dlg2.left_tree.topLevelItemCount()):
+        g = dlg2.left_tree.topLevelItem(gi)
+        if g.childCount():
+            target = g.child(0)
+            break
+    assert target is not None, "左栏树里没有可选择的分组/断面"
+    target.setSelected(True)
+
+    dlg2._on_delete_left()
+    n_after = len(win.project.all_sections())
+    out.append(f"左栏删除立即生效 OK：{n_before} → {n_after} 个断面")
+    assert n_after == n_before - 1, f"应少 1 个断面，实际 {n_before} → {n_after}"
+    assert dlg2.btn_undo_delete.isEnabled(), "删过之后「撤销删除」应变为可用"
+
+    # 确认框文案不能带 Markdown / HTML 记号：QMessageBox 只认 HTML，
+    # `**加粗**` 会**原样显示星号**（写的时候很容易顺手打上去）。
+    _qs = [t for kind, t in calls["mb"] if kind == "question"]
+    assert _qs, "删除时没有弹出确认框，无法检查文案"
+    _txt = _qs[-1]
+    assert "**" not in _txt, f"弹框文案里混进了 Markdown 星号：{_txt!r}"
+    assert not any(ch in _txt for ch in "<>&"), \
+        f"弹框文案里混进了 HTML 记号：{_txt!r}"
+    out.append("删除确认框文案无 Markdown/HTML 记号 OK")
+
+    dlg2._on_undo_delete()
+    n_undo = len(win.project.all_sections())
+    out.append(f"「撤销删除」恢复数量 OK：{n_after} → {n_undo} 个断面")
+    assert n_undo == n_before, f"撤销后应回到 {n_before} 个，实际 {n_undo}"
+    assert not dlg2.btn_undo_delete.isEnabled(), \
+        "撤销后已回到基线，「撤销删除」应重新禁用"
+
+    # 还原的必须是断面本身（含手动设定），不能只是个数对上
+    back = [s for s in win.project.all_sections() if s.name == victim.name]
+    assert len(back) == 1, f"撤销后应能找回断面 {victim.name}，实际 {len(back)} 个"
+    assert back[0].thalweg_manual == 1, \
+        "撤销没有还原断面的手动设定（深泓点），说明快照没起作用"
+    out.append("「撤销删除」连手动设定一起还原 OK")
+
     # ⚠ 必须把主窗口恢复成干净状态再交还，否则后续断言会串味：
-    #   本检查把 win.project 换成了导入窗口里那份 deepcopy 副本，
+    #   本检查把 win.project 换成了导入窗口里那份工程对象，
     #   而它没经过主窗口的列表/视图刷新——后续"切列表看纵剖面"之类的断言
     #   会因为 line_index 对不上而假红。（实测踩到过。）
     win._load()
