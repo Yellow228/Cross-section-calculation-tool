@@ -38,10 +38,20 @@ class ParamPanel(QWidget):
         self.o_left = make_spin(0.001, 0.2, 0.005, 3)
         self.o_right = make_spin(0.001, 0.2, 0.005, 3)
 
+        self.o_rough.setToolTip("当前断面的综合糙率 n")
+        self.o_slope.setToolTip("当前断面的河道比降 S")
+        self.o_q.setToolTip("当前断面的设计流量 Qs (m³/s)")
+
         self.o_use_zone = QCheckBox("分区糙率分开填写（主槽 / 左滩 / 右滩）")
+        self.o_use_zone.setToolTip("勾选后可分别为左滩、主槽、右滩设置不同的糙率")
         self.o_use_zone.toggled.connect(self._toggle_zone)
 
+        self.o_main.setToolTip("主槽的糙率 n")
+        self.o_left.setToolTip("左滩的糙率 n")
+        self.o_right.setToolTip("右滩的糙率 n")
+
         self.btn_one = QPushButton("应用到当前断面")
+        self.btn_one.setToolTip("将上述参数写入当前选中的断面，并重新计算")
         self.btn_one.clicked.connect(self._apply_one)
 
         fo = QFormLayout()
