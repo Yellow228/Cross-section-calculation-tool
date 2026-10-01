@@ -214,7 +214,7 @@ class SettingsDialog(QDialog):
             "单断面：不分区，整断面一次算完，顶宽取水面左右交点跨度。")
         self.cmb_mode.currentIndexChanged.connect(lambda _: self.changed.emit())
 
-        self.spin_dh = make_spin(0.01, 5.0, 0.05, 3, cfg.dH)
+        self.spin_dh = make_spin(0.01, 5.0, 0.05, 3, cfg.dH, suffix=" m")
         self.spin_dh.setToolTip("水位–流量曲线的水位步长（m）。越小越精细，曲线点越多。")
         self.spin_dh.valueChanged.connect(lambda _: self.changed.emit())
 
@@ -255,7 +255,7 @@ class SettingsDialog(QDialog):
             "左右岸水面交点（Zbs/Ybs）依旧按 Hs + 加高幅度 算，结果不变。")
         self.chk_raise.toggled.connect(lambda _: self.changed.emit())
 
-        self.spin_raise = make_spin(0.0, 20.0, 0.1, 2, cfg.raise_level)
+        self.spin_raise = make_spin(0.0, 20.0, 0.1, 2, cfg.raise_level, suffix=" m")
         self.spin_raise.setToolTip(
             "设计水位之上的安全加高幅度（m）。\n"
             "加高水位 = 设计水位 + 此幅度；原程序固定为 1.0（百年一遇加 1 m），\n"

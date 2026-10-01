@@ -1,0 +1,3 @@
+## $(date +%Y-%m-%d) - Added Unit Suffixes to SpinBoxes
+**Learning:** PySide6/PyQt's `QDoubleSpinBox` provides a built-in `.setSuffix()` method, which is a very clean way to add units (like ` m³/s` or ` m`) directly inside the input field. This is visually polished and provides immediate context without requiring extra labels or relying solely on tooltips. It's a great pattern for forms dealing with physical quantities.
+**Action:** Always check if a SpinBox widget represents a physical quantity with a unit, and apply `.setSuffix()` (with a leading space for readability) whenever possible to enhance the UX of the form without changing the layout.
