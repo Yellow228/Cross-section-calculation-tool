@@ -118,13 +118,13 @@ def _check_import_dialog_inner(win, out: list, ImportDataDialog, P, load_folder)
     # 这样"导入路径会不会漏掉列序/参数处理"才真的被覆盖到。
     new_project, _warnings, _note = dlg._read_dir()
     dlg._merge_project(new_project)
-    dlg._refresh_tree()
+    dlg._refresh_left_tree()
 
-    n_ln = len(dlg.project.profile_lines)
-    n_sec = sum(len(ln.sections) for ln in dlg.project.profile_lines)
-    out.append(f"导入窗口 OK：{n_ln} 条纵断面线 / {n_sec} 个横断面，树 {dlg.tree.topLevelItemCount()} 项")
-    assert dlg.tree.topLevelItemCount() == n_ln, \
-        f"树顶层项数 {dlg.tree.topLevelItemCount()} 与分组数 {n_ln} 不符"
+    n_ln = len(dlg.current_project.profile_lines)
+    n_sec = sum(len(ln.sections) for ln in dlg.current_project.profile_lines)
+    out.append(f"导入窗口 OK：{n_ln} 条纵断面线 / {n_sec} 个横断面，树 {dlg.left_tree.topLevelItemCount()} 项")
+    assert dlg.left_tree.topLevelItemCount() == n_ln, \
+        f"树顶层项数 {dlg.left_tree.topLevelItemCount()} 与分组数 {n_ln} 不符"
 
     # 模拟主窗口在 accept 之后做的事（含本次新增的参数填补）
     win.project = dlg.get_project()
