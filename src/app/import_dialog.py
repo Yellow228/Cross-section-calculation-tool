@@ -17,12 +17,13 @@ class ImportDataDialog(QDialog):
     def __init__(self, current_project: Project | None, data_dir: str, cfg: Config, parent=None):
         super().__init__(parent)
         self.setWindowTitle("导入excel数据")
-        self.resize(600, 400)
+        self.resize(800, 500)
 
-        self.project = Project(
-            profile_lines=copy.deepcopy(current_project.profile_lines)
-            if current_project else []
-        )
+        # 左栏：直接引用主界面的工程对象
+        self.current_project = current_project if current_project else Project()
+        # 右栏：从目录新读出的待导入数据
+        self.new_project = Project()
+
         self.data_dir = data_dir
         self.cfg = cfg
         #: 最近一次载入的「输入坐标列序」判定明细。
@@ -38,44 +39,172 @@ class ImportDataDialog(QDialog):
         self.xy_pending: list = []
 
         self._build_ui()
-        self._refresh_tree()
+        self._refresh_left_tree()
+        self._refresh_right_tree()
 
     def _build_ui(self):
-        self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["断面分组 / 横断面"])
-        self.tree.setSelectionMode(QTreeWidget.ExtendedSelection)
+        # 左栏 UI
+        self.left_tree = QTreeWidget()
+        self.left_tree.setHeaderLabels(["当前工程已导入断面"])
+        self.left_tree.setSelectionMode(QTreeWidget.ExtendedSelection)
+        self.btn_delete_left = QPushButton("删除已有断面")
+        self.btn_delete_left.clicked.connect(self._on_delete_left)
+
+        left_layout = QVBoxLayout()
+        left_layout.addWidget(self.left_tree)
+        left_layout.addWidget(self.btn_delete_left)
+
+        # 右栏 UI
+        self.right_tree = QTreeWidget()
+        self.right_tree.setHeaderLabels(["数据目录下的断面 (待导入)"])
+        self.right_tree.setSelectionMode(QTreeWidget.ExtendedSelection)
 
         self.btn_load_dir = QPushButton("载入数据目录")
-        self.btn_delete = QPushButton("删除断面")
+        self.btn_delete_right = QPushButton("删除断面")
         self.btn_apply = QPushButton("载入并计算")
 
         self.btn_load_dir.clicked.connect(self._on_load_dir)
-        self.btn_delete.clicked.connect(self._on_delete)
-        self.btn_apply.clicked.connect(self.accept)
+        self.btn_delete_right.clicked.connect(self._on_delete_right)
+        self.btn_apply.clicked.connect(self._on_apply)
 
-        bottom_layout = QHBoxLayout()
-        bottom_layout.addWidget(self.btn_load_dir)
-        bottom_layout.addWidget(self.btn_delete)
-        bottom_layout.addWidget(self.btn_apply)
+        right_bottom_layout = QHBoxLayout()
+        right_bottom_layout.addWidget(self.btn_load_dir)
+        right_bottom_layout.addWidget(self.btn_delete_right)
+        right_bottom_layout.addWidget(self.btn_apply)
 
-        layout = QVBoxLayout(self)
-        layout.addWidget(self.tree)
-        layout.addLayout(bottom_layout)
+        right_layout = QVBoxLayout()
+        right_layout.addWidget(self.right_tree)
+        right_layout.addLayout(right_bottom_layout)
 
-    def _refresh_tree(self):
-        self.tree.clear()
-        for ln in self.project.profile_lines:
-            group_item = QTreeWidgetItem(self.tree, [ln.name])
+        main_layout = QHBoxLayout(self)
+        main_layout.addLayout(left_layout, 1)
+        main_layout.addLayout(right_layout, 1)
+
+    def _refresh_left_tree(self):
+        self.left_tree.clear()
+        for ln in self.current_project.profile_lines:
+            group_item = QTreeWidgetItem(self.left_tree, [ln.name])
             group_item.setData(0, Qt.UserRole, ("group", ln))
 
             for sec in ln.sections:
                 sec_item = QTreeWidgetItem(group_item, [sec.name])
                 sec_item.setData(0, Qt.UserRole, ("section", ln, sec))
+        self.left_tree.expandAll()
 
-        self.tree.expandAll()
+    def _refresh_right_tree(self):
+        self.right_tree.clear()
+        for ln in self.new_project.profile_lines:
+            group_item = QTreeWidgetItem(self.right_tree, [ln.name])
+            group_item.setData(0, Qt.UserRole, ("group", ln))
+
+            for sec in ln.sections:
+                sec_item = QTreeWidgetItem(group_item, [sec.name])
+                sec_item.setData(0, Qt.UserRole, ("section", ln, sec))
+        self.right_tree.expandAll()
 
     def get_project(self) -> Project:
-        return self.project
+        return self.current_project
+
+    def _on_delete_left(self):
+        selected_items = self.left_tree.selectedItems()
+        if not selected_items:
+            return
+
+        to_delete_groups, to_delete_sections = [], []
+        for item in selected_items:
+            data = item.data(0, Qt.UserRole)
+            if not data:
+                continue
+            if data[0] == "section":
+                to_delete_sections.append((data[1], data[2]))
+            elif data[0] == "group":
+                to_delete_groups.append(data[1])
+
+        n_sec = len(to_delete_sections) + sum(len(ln.sections) for ln in to_delete_groups)
+        n_grp = len(to_delete_groups)
+        if n_grp == 0 and n_sec == 0:
+            return
+
+        parts = []
+        if n_grp:
+            parts.append(f"{n_grp} 个分组")
+        if n_sec:
+            parts.append(f"{n_sec} 个横断面")
+
+        reply = QMessageBox.question(
+            self, "确认删除",
+            "确定要删除已有工程的 " + "、".join(parts) + " 吗？\n"
+            "（删除后将立即生效并从主界面移除）",
+            QMessageBox.Yes | QMessageBox.No)
+        if reply == QMessageBox.No:
+            return
+
+        for ln, sec in to_delete_sections:
+            if ln in self.current_project.profile_lines and sec in ln.sections:
+                ln.sections.remove(sec)
+
+        for ln in to_delete_groups:
+            if ln in self.current_project.profile_lines:
+                self.current_project.profile_lines.remove(ln)
+
+        self._refresh_left_tree()
+
+        # Immediate refresh on the parent window
+        if self.parent():
+            parent = self.parent()
+            parent._set_dirty(True)
+            parent._solve_all()
+            parent._refresh_line_list()
+            parent._refresh_current_views()
+            parent.param_panel.set_sections(self.current_project.all_sections())
+
+    def _on_delete_right(self):
+        selected_items = self.right_tree.selectedItems()
+        if not selected_items:
+            return
+
+        to_delete_groups, to_delete_sections = [], []
+        for item in selected_items:
+            data = item.data(0, Qt.UserRole)
+            if not data:
+                continue
+            if data[0] == "section":
+                to_delete_sections.append((data[1], data[2]))
+            elif data[0] == "group":
+                to_delete_groups.append(data[1])
+
+        n_sec = len(to_delete_sections) + sum(len(ln.sections) for ln in to_delete_groups)
+        n_grp = len(to_delete_groups)
+        if n_grp == 0 and n_sec == 0:
+            return
+
+        parts = []
+        if n_grp:
+            parts.append(f"{n_grp} 个分组")
+        if n_sec:
+            parts.append(f"{n_sec} 个横断面")
+
+        reply = QMessageBox.question(
+            self, "确认删除",
+            "确定要删除本次待导入的 " + "、".join(parts) + " 吗？\n"
+            "（删除只作用于本次导入窗口，不导入这些数据）",
+            QMessageBox.Yes | QMessageBox.No)
+        if reply == QMessageBox.No:
+            return
+
+        for ln, sec in to_delete_sections:
+            if ln in self.new_project.profile_lines and sec in ln.sections:
+                ln.sections.remove(sec)
+
+        for ln in to_delete_groups:
+            if ln in self.new_project.profile_lines:
+                self.new_project.profile_lines.remove(ln)
+
+        self._refresh_right_tree()
+
+    def _on_apply(self):
+        added, skipped = self._merge_project(self.new_project)
+        self.accept()
 
     def _on_load_dir(self):
         d = QFileDialog.getExistingDirectory(self, "选择存放 xlsx 的目录", self.data_dir)
@@ -84,27 +213,23 @@ class ImportDataDialog(QDialog):
         self.data_dir = d
 
         try:
-            new_project, warnings, note = self._read_dir()
+            loaded_project, warnings, note = self._read_dir()
         except Exception as e:
             QMessageBox.critical(self, "载入失败", str(e))
             return
 
-        added, skipped = self._merge_project(new_project)
-        self._refresh_tree()
+        self.new_project = loaded_project
+        self._refresh_right_tree()
 
-        n_ln = len(self.project.profile_lines)
-        n_sec = sum(len(ln.sections) for ln in self.project.profile_lines)
-        msg = f"已载入 {os.path.basename(self.data_dir)}：本次新增 {added} 个分组。"
-        msg += f"\n当前共 {n_ln} 个分组、{n_sec} 个横断面。"
-        if skipped:
-            # 跳过不是错，但必须说出来——否则"数据少了"会让人以为是程序丢的
-            msg += f"\n⚠ 有 {skipped} 个同名分组按你的选择跳过，未导入。"
+        n_ln = len(self.new_project.profile_lines)
+        n_sec = sum(len(ln.sections) for ln in self.new_project.profile_lines)
+        msg = f"已读取 {os.path.basename(self.data_dir)}：共读取到 {n_ln} 个分组、{n_sec} 个横断面。"
         if warnings:
             msg += "\n告警：" + "；".join(warnings[:3])
         if note:
             msg += "\n" + note
-        msg += "\n\n确认无误后点「载入并计算」应用到主界面。"
-        QMessageBox.information(self, "载入完成", msg)
+        msg += "\n\n你可以在右侧列表删除本次不想导入的断面，然后点击「载入并计算」将它们合并到工程中。"
+        QMessageBox.information(self, "读取完成", msg)
 
     def _read_dir(self):
         """读数据目录，返回 (工程, 告警, 列序提示)。
@@ -196,7 +321,7 @@ class ImportDataDialog(QDialog):
         """
         added = skipped = 0
         for new_ln in new_project.profile_lines:
-            existing_ln = next((ln for ln in self.project.profile_lines if ln.name == new_ln.name), None)
+            existing_ln = next((ln for ln in self.current_project.profile_lines if ln.name == new_ln.name), None)
 
             if existing_ln:
                 choice = self._prompt_resolution(
@@ -205,22 +330,22 @@ class ImportDataDialog(QDialog):
                     ["跳过", "覆盖", "合并", "重命名新增"]
                 )
                 if choice == "覆盖":
-                    existing_idx = self.project.profile_lines.index(existing_ln)
-                    self.project.profile_lines[existing_idx] = new_ln
+                    existing_idx = self.current_project.profile_lines.index(existing_ln)
+                    self.current_project.profile_lines[existing_idx] = new_ln
                 elif choice == "合并":
                     self._merge_line(existing_ln, new_ln)
                 elif choice == "重命名新增":
                     new_name, ok = QInputDialog.getText(self, "重命名新增", "请输入新的分组名称:", text=new_ln.name)
                     if ok and new_name:
                         new_ln.name = new_name
-                        self.project.profile_lines.append(new_ln)
+                        self.current_project.profile_lines.append(new_ln)
                         added += 1
                     else:
                         skipped += 1        # 取消重命名 = 放弃这一项
                 else:
                     skipped += 1            # 主动选「跳过」或直接关窗
             else:
-                self.project.profile_lines.append(new_ln)
+                self.current_project.profile_lines.append(new_ln)
                 added += 1
         return added, skipped
 
@@ -251,48 +376,3 @@ class ImportDataDialog(QDialog):
 
         # 重新排序并处理 profile 等，如果不确定最好不改，但目前可以先保留
 
-    def _on_delete(self):
-        selected_items = self.tree.selectedItems()
-        if not selected_items:
-            return
-
-        # 先算出实际会被删掉的组与断面：树支持多选，父项和子项可能同时被选中，
-        # 提示里要说清"真正删了多少"，不然用户按选中项数核对会以为丢了东西。
-        to_delete_groups, to_delete_sections = [], []
-        for item in selected_items:
-            data = item.data(0, Qt.UserRole)
-            if not data:
-                continue
-            if data[0] == "section":
-                to_delete_sections.append((data[1], data[2]))
-            elif data[0] == "group":
-                to_delete_groups.append(data[1])
-
-        n_sec = len(to_delete_sections) + sum(
-            len(ln.sections) for ln in to_delete_groups)
-        n_grp = len(to_delete_groups)
-        if n_grp == 0 and n_sec == 0:
-            return
-
-        parts = []
-        if n_grp:
-            parts.append(f"{n_grp} 个分组")
-        if n_sec:
-            parts.append(f"{n_sec} 个横断面")
-        reply = QMessageBox.question(
-            self, "确认删除",
-            "确定要删除 " + "、".join(parts) + " 吗？\n"
-            "（删除只作用于本次导入窗口，点「载入并计算」后才会写回主界面）",
-            QMessageBox.Yes | QMessageBox.No)
-        if reply == QMessageBox.No:
-            return
-
-        for ln, sec in to_delete_sections:
-            if ln in self.project.profile_lines and sec in ln.sections:
-                ln.sections.remove(sec)
-
-        for ln in to_delete_groups:
-            if ln in self.project.profile_lines:
-                self.project.profile_lines.remove(ln)
-
-        self._refresh_tree()
