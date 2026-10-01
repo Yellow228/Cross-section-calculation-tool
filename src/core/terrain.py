@@ -84,7 +84,6 @@ def _scan_turning_point(s: list[float], z: list[float], dmin_idx: int,
     passed_steep = False
 
     if direction == "left":
-        # MATLAB: for k = IdxDmin-1 : -1 : 1   (1-based)
         # 0-based k1 从 dmin_idx-1 递减到 0
         for k1 in range(dmin_idx - 1, -1, -1):
             dx = s[k1 + 1] - s[k1]
@@ -97,9 +96,8 @@ def _scan_turning_point(s: list[float], z: list[float], dmin_idx: int,
                     passed_steep = True
                 continue
             if dz < 0 or slope < cfg.turn_slope:
-                return k1 + 1          # MATLAB IdxLeftTurn = k+1
+                return k1 + 1
     else:
-        # MATLAB: for k = IdxDmin+1 : npt   (1-based)
         # 0-based k1 从 dmin_idx+1 递增到 n-1
         for k1 in range(dmin_idx + 1, n):
             dx = s[k1] - s[k1 - 1]
@@ -112,7 +110,7 @@ def _scan_turning_point(s: list[float], z: list[float], dmin_idx: int,
                     passed_steep = True
                 continue
             if dz < 0 or slope < cfg.turn_slope:
-                return k1 - 1          # MATLAB IdxRightTurn = k-1
+                return k1 - 1
 
     return None
 
