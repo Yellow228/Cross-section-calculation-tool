@@ -111,11 +111,16 @@ Q1~Q15 的用户决策记录、以及重写中自引入缺陷（M1~M5）的复�
 **改完至少跑三层**：单测（不受界面影响）→ 界面冒烟（模拟真实点击与 Excel 粘贴）
 → 打包后自检（在 frozen 环境里把整条链路再跑一遍）。
 
-- 单测共 **179 个用例**，分两类（别笼统说"纯标准库可跑"）：
-  - **176 个纯标准库**，不需要装任何依赖，系统 Python 直接就能跑
-  - **3 个真实数据回归测试**（`test_real_data_roundtrip`、`test_thalweg_index_matches_terrain`、
-    `test_real_data_roundtrip_with_overrides`）会读 `data\`，**需要 openpyxl**。
-    `data\` 不存在时它们 `skipTest` 自动跳过；但**`data\` 在、openpyxl 缺时会直接报错**
+- 单测共 **196 个用例**，分两类（别笼统说"纯标准库可跑"）：
+  - **188 个纯标准库**，不需要装任何依赖，系统 Python 直接就能跑
+  - **8 个需要 openpyxl**，又分两组：
+    - **4 个读 `data\` / `samples\` 的回归测试**（`test_real_data_roundtrip`、
+      `test_thalweg_index_matches_terrain`、`test_real_data_roundtrip_with_overrides`、
+      `test_loaded_folder_can_be_filled_by_defaults`）——目录不存在时 `skipTest`
+      自动跳过；但**目录在、openpyxl 缺时会直接报错**
+    - **4 个 `TestDedupeSectionNames`**（重名断面自动改名）——**自己**用 openpyxl
+      写临时 xlsx 造夹具，与 `data\` 无关，因此**没有跳过保护**，
+      缺 openpyxl 时一律报错。用托管 Python 跑单测就会看到这 4 个红
 - 冒烟与自检**需要数据**，但 `data\` 缺失时会自动回退到 `samples\demo_data\`，
   所以干净 clone 也能跑通；回退时日志里会写「用的是**示范数据**」，不会让人误判
 
