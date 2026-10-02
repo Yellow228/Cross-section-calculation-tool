@@ -1,3 +1,3 @@
-## $(date +%Y-%m-%d) - Added Unit Suffixes to SpinBoxes
-**Learning:** PySide6/PyQt's `QDoubleSpinBox` provides a built-in `.setSuffix()` method, which is a very clean way to add units (like ` m³/s` or ` m`) directly inside the input field. This is visually polished and provides immediate context without requiring extra labels or relying solely on tooltips. It's a great pattern for forms dealing with physical quantities.
-**Action:** Always check if a SpinBox widget represents a physical quantity with a unit, and apply `.setSuffix()` (with a leading space for readability) whenever possible to enhance the UX of the form without changing the layout.
+## 2024-05-24 - Dynamic Tooltips for Disabled States in Qt
+**Learning:** In PySide6 desktop applications, disabled controls (like QPushButtons for "Clear" or "Reset") can be very confusing without contextual tooltips explaining *why* they are disabled. Static tooltips set once at creation often fail to convey the dynamic state of the application.
+**Action:** Always pair `setEnabled(bool)` calls with `setToolTip(str)` updates to provide context for disabled interactive elements, improving clarity without adding extra visual noise.

@@ -1450,6 +1450,7 @@ class _ManualBase(QDialog):
             bp.setToolTip("到主界面的「断面形态」图上点一个测点")
             bp.clicked.connect(lambda _=False, k=key: self.pickRequested.emit(k))
             bc = QPushButton("清除")
+            bc.setToolTip("清除手动设定，恢复为程序自动推算")
             bc.clicked.connect(lambda _=False, k=key: self.clearRequested.emit(k))
             self.body.addWidget(bp, self._row, 2)
             self.body.addWidget(bc, self._row, 3)
@@ -1551,9 +1552,26 @@ class _ManualBase(QDialog):
     def _sync_buttons(self):
         ok = self.current is not None and self._info() is not None
         self.btn_reset.setEnabled(bool(self.sections))
+        if bool(self.sections):
+            self.btn_reset.setToolTip("把本组所有断面的手动设定全部清掉，回到程序自动推算")
+        else:
+            self.btn_reset.setToolTip("本组没有断面，无可重置")
+
         for key, (val, bp, bc) in self._pick_widgets.items():
             bp.setEnabled(ok)
-            bc.setEnabled(ok and self._is_manual(key))
+            if ok:
+                bp.setToolTip("到主界面的「断面形态」图上点一个测点")
+            else:
+                bp.setToolTip("请先选择一个有结果的断面")
+
+            is_man = self._is_manual(key)
+            bc.setEnabled(ok and is_man)
+            if not ok:
+                bc.setToolTip("请先选择一个有结果的断面")
+            elif not is_man:
+                bc.setToolTip("当前为自动推算，无需清除")
+            else:
+                bc.setToolTip("清除手动设定，恢复为程序自动推算")
 
     def popup(self):
         self.show()
@@ -2024,6 +2042,7 @@ class HydroLossDialog(_ManualBase):
                 sp.setValue(0)
                 sp.blockSignals(False)
                 btn.setEnabled(False)
+                btn.setToolTip("请先选择一个断面")
             return
 
         for sp, btn in self._inputs.values():
@@ -2033,18 +2052,22 @@ class HydroLossDialog(_ManualBase):
         if sec.hydro_loss_contraction is not None:
             self._inputs["contraction"][0].setValue(sec.hydro_loss_contraction)
             self._inputs["contraction"][1].setEnabled(True)
+            self._inputs["contraction"][1].setToolTip("清除手动设定，恢复为程序默认值 (0.1)")
         else:
             self._inputs["contraction"][0].setValue(0.1)  # 默认显示0.1
             self._inputs["contraction"][1].setEnabled(False)
+            self._inputs["contraction"][1].setToolTip("当前使用默认值，无需清除")
         self._inputs["contraction"][0].blockSignals(False)
 
         self._inputs["expansion"][0].blockSignals(True)
         if sec.hydro_loss_expansion is not None:
             self._inputs["expansion"][0].setValue(sec.hydro_loss_expansion)
             self._inputs["expansion"][1].setEnabled(True)
+            self._inputs["expansion"][1].setToolTip("清除手动设定，恢复为程序默认值 (0.3)")
         else:
             self._inputs["expansion"][0].setValue(0.3)  # 默认显示0.3
             self._inputs["expansion"][1].setEnabled(False)
+            self._inputs["expansion"][1].setToolTip("当前使用默认值，无需清除")
         self._inputs["expansion"][0].blockSignals(False)
 
     def _fill_table(self):
