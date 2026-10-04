@@ -925,6 +925,35 @@ Qt 默认的 Ctrl+V 会把**整段剪贴板塞进一个单元格**；Excel 复�
 
 ---
 
+### #29 `setEnabled` 与 `setToolTip` 必须成对改
+
+`_ManualBase._sync_buttons()`（以及 `HydroLossDialog` 的填表逻辑）里，
+每个控件都是「改可用状态」+「改提示文本」**成对**出现的：
+
+```python
+bc.setEnabled(ok and is_man)
+if not ok:
+    bc.setToolTip("请先选择一个有结果的断面")
+elif not is_man:
+    bc.setToolTip("当前为自动推算，无需清除")
+else:
+    bc.setToolTip("清除手动设定，恢复为程序自动推算")
+```
+
+**为什么必须成对**：按钮灰着却不说明原因，用户只能猜"是不是程序坏了"。
+而这类漏改**不会报错**——界面照样跑，只是那个按钮永远在说一件过时的事
+（比如"请先选择一个断面"，其实断面早选好了）。
+
+**⚠ 重构时最容易犯的错**：只保留 `setEnabled`、顺手删掉 `setToolTip`。
+所以 `tools/gui_smoke.py::_check_manual_tooltips` 钉住了三种状态
+（未选断面 / 全自动 / 有手动设定），并验证提示是**按字段**刷新的
+（同一断面里手动字段说"清除…"，自动字段说"无需清除"）。
+
+这条护栏做过**变异测试**：把禁用态的 `setToolTip` 清空，冒烟立刻红在
+`assert cl_tip.strip()`。改动 `_sync_buttons` 后请跑一遍冒烟确认它还是绿的。
+
+---
+
 ## 六、数据与当前状态
 
 ⚠ **`data/` 不入库**（真实测量数据，不随仓库分发；见 `.gitignore`）。

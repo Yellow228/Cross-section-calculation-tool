@@ -209,6 +209,79 @@ def _check_import_dialog_inner(win, out: list, ImportDataDialog, P, load_folder,
     win._load()
 
 
+def _check_manual_tooltips(win, out: list) -> None:
+    """护栏：被禁用的按钮必须带"为什么禁用"的提示（`_ManualBase._sync_buttons`）。
+
+    为什么值得单独守：`setEnabled` 与 `setToolTip` 在 `_sync_buttons` 里是一对
+    **必须同步**的调用，漏掉任何一边都**不报错**——按钮灰着却不说明原因，
+    用户只能猜。这类"看着静态、其实依赖状态同步"的代码在后续重构里最容易
+    被改坏，尤其"顺手删掉那行 setToolTip"。此功能原先零测试覆盖，故补在此。
+
+    ⚠ 本函数自己快照并还原手动设定（`try/finally`），所以插在哪里都不会
+      干扰前后其它断言——它只读面板、不触发重算。
+    """
+    dlg = win.dlg_zone
+    secs = dlg._current_sections()
+    assert secs, "前提不成立：分区面板当前组没有断面，护栏测不到东西"
+    need = {"thalweg", "left"}
+    assert need <= set(dlg._pick_widgets), \
+        f"分区面板字段名变了（现为 {sorted(dlg._pick_widgets)}），护栏需同步更新"
+
+    saved = [(s, s.thalweg_manual, s.zone_manual, s.zone_left, s.zone_right)
+             for s in secs]
+    saved_current = dlg.current
+
+    def snap() -> dict:
+        """{key: (拾取可用, 拾取提示, 清除可用, 清除提示)}"""
+        return {k: (w[1].isEnabled(), w[1].toolTip(),
+                    w[2].isEnabled(), w[2].toolTip())
+                for k, w in dlg._pick_widgets.items()}
+
+    try:
+        for s in secs:                       # 从"全自动"这个干净状态起测
+            s.thalweg_manual = None
+            s.zone_manual = False
+            s.zone_left = None
+            s.zone_right = None
+
+        # 1) 未选断面：拾取与清除都该禁用，而且都要说明原因
+        dlg.set_current(None)
+        for k, (pk_en, pk_tip, cl_en, cl_tip) in snap().items():
+            assert not pk_en, f"[{k}] 未选断面时拾取键不该可用"
+            assert not cl_en, f"[{k}] 未选断面时清除键不该可用"
+            assert pk_tip.strip(), f"[{k}] 拾取键被禁用却没有提示"
+            assert cl_tip.strip(), f"[{k}] 清除键被禁用却没有提示"
+
+        # 2) 选中断面但全自动：拾取可用；清除禁用，提示须说明"无需清除"
+        dlg.set_current(secs[0])
+        for k, (pk_en, _pt, cl_en, cl_tip) in snap().items():
+            assert pk_en, f"[{k}] 有断面时拾取键应可用"
+            assert not cl_en, f"[{k}] 全自动时清除键不该可用"
+            assert "自动" in cl_tip, \
+                f"[{k}] 清除键提示应说明当前为自动、无需清除，实际 {cl_tip!r}"
+
+        # 3) 打上手动设定：该键的清除键启用、提示改口；别的键不受影响。
+        #    这一步同时守住"按项同步"——提示是逐字段刷的，不是整块刷一遍。
+        secs[0].thalweg_manual = 0           # 索引 0 恒合法，避免越界假红
+        dlg.set_current(secs[0])
+        s3 = snap()
+        assert s3["thalweg"][2], "手动设定后「清除」应变为可用"
+        assert "清除" in s3["thalweg"][3], \
+            f"手动设定后提示应改为『清除…』，实际 {s3['thalweg'][3]!r}"
+        for k, (_pk_en, _pt, cl_en, cl_tip) in s3.items():
+            if k == "thalweg":
+                continue
+            assert not cl_en, f"[{k}] 未手动却让「清除」可用（提示没按项同步）"
+            assert cl_tip.strip(), f"[{k}] 被禁用却没有提示"
+
+        out.append("禁用按钮的动态提示 OK（未选断面 / 全自动 / 手动 三态都验过）")
+    finally:
+        for s, th, zm, zl, zr in saved:
+            s.thalweg_manual, s.zone_manual = th, zm
+            s.zone_left, s.zone_right = zl, zr
+        dlg.set_current(saved_current)       # 只刷面板显示，不触发重算
+
+
 sys.path.insert(0, os.path.join(ROOT, "src"))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -895,6 +968,12 @@ try:
         win.dlg_settings.cmb_mode.setCurrentIndex(0)
         assert win.cfg.compound_mode
         out.append("单断面模式：边界拾取被拦、深泓点拾取仍允许 OK")
+
+        # ---- 禁用按钮的动态提示 ----
+        # 起因：PR #11 让 `_sync_buttons` 在 setEnabled 的同时也 setToolTip，
+        # 把"为什么这个按钮是灰的"写进提示。这类状态同步代码漏掉一半**不报错**，
+        # 后续重构很容易顺手删掉其中一行，所以补一条护栏钉住它。
+        _check_manual_tooltips(win, out)
 
         # ---- 工程文件必须保存手动设定，否则存了再打开就丢 ----
         rt_sec, rt_ai = None, None
