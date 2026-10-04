@@ -57,6 +57,7 @@ class ImportDataDialog(QDialog):
         self.left_tree.setHeaderLabels(["当前工程已导入断面"])
         self.left_tree.setSelectionMode(QTreeWidget.ExtendedSelection)
         self.btn_delete_left = QPushButton("删除已有断面")
+        self.btn_delete_left.setToolTip("从当前工程中移除选中的断面 (不会删除本地文件)")
         self.btn_delete_left.clicked.connect(self._on_delete_left)
 
         #: 左栏删除立即生效、关窗也不还原，所以必须给一条回退的路。
@@ -82,8 +83,11 @@ class ImportDataDialog(QDialog):
         self.right_tree.setSelectionMode(QTreeWidget.ExtendedSelection)
 
         self.btn_load_dir = QPushButton("载入数据目录")
+        self.btn_load_dir.setToolTip("选择包含 Excel 文件的目录以准备导入")
         self.btn_delete_right = QPushButton("删除断面")
+        self.btn_delete_right.setToolTip("从待导入列表中移除选中项 (不会删除磁盘上的实际文件)")
         self.btn_apply = QPushButton("载入并计算")
+        self.btn_apply.setToolTip("将右侧列表中的数据正式导入工程并进行计算")
 
         self.btn_load_dir.clicked.connect(self._on_load_dir)
         self.btn_delete_right.clicked.connect(self._on_delete_right)
