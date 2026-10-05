@@ -74,8 +74,16 @@ def compute_rating_curve(sec: Section, info: TerrainInfo, cfg: Config
                 B = (xr - xl) if (xl == xl and xr == xr) else 0.0
 
             R = A / P
+
             n_manning = sec.params.roughness_for_zone(iz, n_zone)
-            Q = (1.0 / n_manning) * A * (R ** (2.0 / 3.0)) * math.sqrt(slope)
+            if not n_manning or math.isnan(n_manning):
+                n_manning = 0.03
+
+            safe_slope = slope
+            if not math.isnan(safe_slope) and safe_slope < 0:
+                safe_slope = 0.0
+
+            Q = (1.0 / n_manning) * A * (R ** (2.0 / 3.0)) * math.sqrt(safe_slope)
 
             q_tot += Q
             a_tot += A
