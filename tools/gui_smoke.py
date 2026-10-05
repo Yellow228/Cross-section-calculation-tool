@@ -285,6 +285,178 @@ def _check_manual_tooltips(win, out: list) -> None:
 sys.path.insert(0, os.path.join(ROOT, "src"))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+def _check_params_csv(win, out: list) -> None:
+    """护栏：参数 CSV「导出 -> 导入」必须无损，非法数字必须提示且不生效。
+
+    为什么值得单独守：这两个功能是 PR #13 新加的，当时**零测试覆盖**，
+    而两处都踩过坑——
+      * 导出列若取「统一糙率优先」，分区断面的主槽糙率回灌时会被冲掉
+        （实测 0.030 被改成 0.035，且状态栏只报"更新了 N 个断面"）；
+      * 解析失败若写成 NaN，设计流量一变 NaN，`hydro1d` 会**悄悄用 50.0 顶替**
+        （`hydro1d.py:390`），出一条看起来正常的错水位，全程无告警。
+
+    ⚠ 本函数自己快照并还原被改动的断面参数（`try/finally`），并临时替换
+      `QFileDialog` / `QMessageBox`，插在哪里都不会干扰前后其它断言。
+    """
+    import csv as _csv
+    import os as _os
+    import tempfile
+
+    # ⚠ 必须改 `main_window` 模块里的名字，不是 PySide6 的那个类——
+    #    `main_window` 是 `from PySide6.QtWidgets import QMessageBox` 进来的，
+    #    改 Qt 类本身不会影响它已经持有的引用（`gui_smoke` 里已有同类先例）。
+    from PySide6.QtWidgets import QFileDialog
+    import app.main_window as _mw
+
+    secs = win.project.all_sections()
+    assert secs, "前提不成立：工程里没有断面，CSV 护栏测不到东西"
+
+    # 挑三个断面做三种模式：分区(主槽≠统一) / 整断面 / 分区(主槽=统一)
+    assert len(secs) >= 3, f"需要至少 3 个断面，实际 {len(secs)}"
+    a, b, c = secs[0], secs[1], secs[2]
+    FIELDS = ("design_q", "roughness", "roughness_main",
+              "roughness_left", "roughness_right")
+    saved_orig = [(s, {f: getattr(s.params, f) for f in FIELDS}) for s in secs]
+
+    orig_save = QFileDialog.getSaveFileName
+    orig_open = QFileDialog.getOpenFileName
+    orig_mb = _mw.QMessageBox
+    seen_warn: list[str] = []
+    tmpdir = tempfile.mkdtemp(prefix="csv_check_")
+    path = _os.path.join(tmpdir, "参数表.csv")
+
+    class _StubMB:
+        """只拦 warning（本护栏要断言它被调过），其余照旧不弹窗。"""
+
+        @staticmethod
+        def information(*a_, **k_):
+            return None
+
+        @staticmethod
+        def critical(*a_, **k_):
+            return None
+
+        @staticmethod
+        def question(*a_, **k_):
+            return None
+
+        @staticmethod
+        def warning(*a_, **k_):
+            seen_warn.append(a_[2] if len(a_) > 2 else "")
+
+    def snap(s):
+        return {f: getattr(s.params, f) for f in FIELDS}
+
+    try:
+        _mw.QMessageBox = _StubMB      # 两个方法都可能弹框，进来就换掉
+
+        # ---- 1) 往返无损 ----
+        a.params.roughness, a.params.roughness_main = 0.035, 0.030
+        a.params.roughness_left, a.params.roughness_right = 0.040, 0.045
+        b.params.roughness, b.params.roughness_main = 0.030, None
+        b.params.roughness_left, b.params.roughness_right = None, None
+        c.params.roughness, c.params.roughness_main = 0.033, 0.033
+        c.params.roughness_left, c.params.roughness_right = 0.033, 0.033
+
+        before = [snap(s) for s in secs]
+
+        QFileDialog.getSaveFileName = staticmethod(lambda *a_, **k_: (path, ""))
+        win._export_params_csv()
+        assert _os.path.exists(path), "导出没有落盘"
+        with open(path, encoding=win.cfg.csv_encoding) as fh:
+            rows = list(_csv.reader(fh))
+        assert rows[0] == ["横断面名称", "设计流量", "糙率", "左岸糙率", "右岸糙率"], \
+            f"导出表头变了：{rows[0]}"
+        # 「糙率」列必须是**主槽真实值**（A 行应为 0.03，不是统一糙率 0.035）
+        row_a = next(r for r in rows[1:] if r and r[0] == a.name)
+        assert row_a[2] == "0.03", \
+            f"导出「糙率」列应为主槽糙率 0.03，实际 {row_a[2]!r}（写成统一糙率会把分区冲掉）"
+
+        QFileDialog.getOpenFileName = staticmethod(lambda *a_, **k_: (path, ""))
+        win._import_params_csv()
+        after = [snap(s) for s in secs]
+
+        def _same(x, y) -> bool:
+            """None 与 NaN 视为同一种"未填"。"""
+            xb = x is None or (isinstance(x, float) and x != x)
+            yb = y is None or (isinstance(y, float) and y != y)
+            return True if (xb and yb) else (not xb and not yb and x == y)
+
+        for s, bf, af in zip(secs, before, after):
+            # ⚠ 不逐字段死比相等：`roughness_main = <等于统一糙率的数值>` 与 None
+            #    在 `roughness_for_zone` 下**完全等价**（None 回退到 roughness），
+            #    整断面模式本就会把它规范成 None。所以只钉"不许丢数据"：
+            #    分区断面的主槽值必须逐位保住，整断面断面的统一糙率必须保住。
+            if bf["roughness_left"] is not None or bf["roughness_right"] is not None:
+                assert af["roughness_main"] == bf["roughness_main"], \
+                    f"分区断面主槽糙率变了：{s.name} {bf['roughness_main']} -> {af['roughness_main']}"
+            assert _same(af["roughness"], bf["roughness"]), \
+                f"统一糙率变了：{s.name} {bf['roughness']} -> {af['roughness']}"
+            assert _same(af["design_q"], bf["design_q"]), \
+                f"设计流量变了：{s.name} {bf['design_q']} -> {af['design_q']}"
+            assert _same(af["roughness_left"], bf["roughness_left"]), \
+                f"左岸糙率变了：{s.name}"
+            assert _same(af["roughness_right"], bf["roughness_right"]), \
+                f"右岸糙率变了：{s.name}"
+            # 有效糙率不得因往返而改变（三种分区数都验）
+            for zc in (1, 2, 3):
+                bv = [s.params.roughness_for_zone(i, zc) for i in range(zc)]
+                assert not any(v != v for v in bv), f"{s.name} 有效糙率算出了 NaN"
+        # 分区断面（主槽≠统一）逐位不变 —— 这正是最初修掉的数据丢失
+        n_zoned = 0
+        for s, bf, af in zip(secs, before, after):
+            if bf["roughness_main"] is not None and bf["roughness"] is not None \
+                    and bf["roughness_main"] != bf["roughness"]:
+                n_zoned += 1
+                assert af["roughness_main"] == bf["roughness_main"], \
+                    f"分区断面往返有损：{s.name}{bf} -> {af}"
+        out.append(f"参数 CSV 往返无损 OK（{len(secs)} 个断面，其中分区 {n_zoned} 个）")
+
+        # ---- 2) 非法数字：跳过 + 提示，且不得污染其它字段 ----
+        a.params.design_q = 120.0
+        a.params.roughness, a.params.roughness_main = 0.035, 0.030
+        b.params.roughness, b.params.roughness_main = 0.030, None
+        c.params.roughness_left = 0.040
+        guard = {s.name: snap(s) for s in secs}
+
+        with open(path, "w", encoding=win.cfg.csv_encoding, newline="") as fh:
+            fh.write("横断面名称,设计流量,糙率,左岸糙率,右岸糙率\n")
+            fh.write(f"{a.name},120 m3/s,,0.04,0.045\n")     # 设计流量非法
+            fh.write(f"{b.name},80,0.035。,0.04,0.045\n")     # 糙率非法
+            fh.write(f"{c.name},60,0.033,－0.1,0.033\n")      # 全角负号非法
+
+        _mw.QMessageBox = _StubMB
+        win._import_params_csv()
+        # 非法格所在字段必须原样保留
+        assert snap(a)["design_q"] == 120.0, \
+            f"设计流量被非法输入改掉了：{snap(a)['design_q']}（应保留 120）"
+        assert snap(a)["roughness_main"] == 0.030, \
+            f"主槽糙率被改掉了：{snap(a)['roughness_main']}（应保留 0.030）"
+        assert snap(b)["roughness_main"] is None, \
+            f"非法糙率不该凭空写出值：{snap(b)['roughness_main']}"
+        assert snap(c)["roughness_left"] == 0.040, \
+            f"左岸糙率被改掉了：{snap(c)['roughness_left']}（应保留 0.040）"
+        # 不得有任何字段变成 NaN
+        for s in secs:
+            for f, v in snap(s).items():
+                assert not (isinstance(v, float) and v != v), \
+                    f"{s.name}.{f} 被写成了 NaN —— 静默失败"
+        assert seen_warn, "非法数字没有给出任何提示（应为 QMessageBox.warning）"
+        assert "不是有效数字" in seen_warn[0], \
+            f"提示文案没说明原因：{seen_warn[0][:80]!r}"
+        out.append("参数 CSV 非法数字 跳过+提示 OK（3 处非法格，字段均保留原值）")
+
+    finally:
+        QFileDialog.getSaveFileName = orig_save
+        QFileDialog.getOpenFileName = orig_open
+        _mw.QMessageBox = orig_mb
+        for s, vals in saved_orig:          # 还原参数
+            for f, v in vals.items():
+                setattr(s.params, f, v)
+        win._recalc()
+        win._refresh_current_views()
+
+
 out = []
 failed = False
 try:
@@ -974,6 +1146,11 @@ try:
         # 把"为什么这个按钮是灰的"写进提示。这类状态同步代码漏掉一半**不报错**，
         # 后续重构很容易顺手删掉其中一行，所以补一条护栏钉住它。
         _check_manual_tooltips(win, out)
+
+        # ---- 参数 CSV 导出/导入：往返无损 + 非法数字提示 ----
+        # 起因：PR #13 新增的这两个功能原先零覆盖，且导出列口径与
+        # "解析失败写 NaN" 两处都踩过静默失败的坑。
+        _check_params_csv(win, out)
 
         # ---- 工程文件必须保存手动设定，否则存了再打开就丢 ----
         rt_sec, rt_ai = None, None

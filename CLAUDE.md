@@ -111,8 +111,8 @@ Q1~Q15 的用户决策记录、以及重写中自引入缺陷（M1~M5）的复�
 **改完至少跑三层**：单测（不受界面影响）→ 界面冒烟（模拟真实点击与 Excel 粘贴）
 → 打包后自检（在 frozen 环境里把整条链路再跑一遍）。
 
-- 单测共 **196 个用例**，分两类（别笼统说"纯标准库可跑"）：
-  - **188 个纯标准库**，不需要装任何依赖，系统 Python 直接就能跑
+- 单测共 **210 个用例**，分两类（别笼统说"纯标准库可跑"）：
+  - **202 个纯标准库**，不需要装任何依赖，系统 Python 直接就能跑
   - **8 个需要 openpyxl**，又分两组：
     - **4 个读 `data\` / `samples\` 的回归测试**（`test_real_data_roundtrip`、
       `test_thalweg_index_matches_terrain`、`test_real_data_roundtrip_with_overrides`、
@@ -951,6 +951,55 @@ else:
 
 这条护栏做过**变异测试**：把禁用态的 `setToolTip` 清空，冒烟立刻红在
 `assert cl_tip.strip()`。改动 `_sync_buttons` 后请跑一遍冒烟确认它还是绿的。
+
+---
+
+### #30 参数 CSV 的「糙率」列 = **主槽糙率**，且导出要「主槽优先」
+
+`_export_params_csv` 的「糙率」列取的是 `roughness_main`，**不是** `roughness`：
+
+```python
+n_main = p.roughness_main
+if n_main is None or n_main != n_main:   # 主槽没填才回退统一糙率
+    n_main = p.roughness
+```
+
+**⚠ 别抄 `dialogs.BatchDialog._refresh_roughness_table` 的写法**。那里是
+`roughness` 优先（`main = p.roughness; if not(main==main): main = p.roughness_main`），
+因为**界面显示**两者本该同值、取哪个都一样。但**导出到 CSV 是要能原样回灌的**，
+一旦按「统一优先」写，"主槽 0.030 + 统一 0.035" 的分区断面回灌后主槽就变成 0.035
+（实测过，且状态栏只报"更新了 N 个断面"，一个字不提字段被改）。
+
+导入侧对应地**按分区与否分流**（与批量对话框 `collect()` 同口径）：
+
+| CSV 里左右滩 | 认定模式 | 「糙率」列写到 |
+|---|---|---|
+| 有值 | 分区糙率 | `roughness_main`（`roughness` 保持不动） |
+| 都留空 | 整断面糙率 | `roughness`，并把三个分区字段清成 `None` |
+
+注意 `None` 与「数值 == 统一糙率」在 `roughness_for_zone` 下**完全等价**
+（`None` 会回退到 `roughness`），所以整断面模式把它规范成 `None` 是**无害的**，
+别把冒烟断言写成逐字段严格相等——那样会误报。
+
+### #31 导入外部表格：解析失败必须**跳过并保留原值**，绝不许写 NaN
+
+`_import_params_csv` 里非法数字（`120 m3/s`、`1,200`、`0.035。`、全角负号…）
+走的是「跳过该格 + 保留原值 + 汇总提示」，**不是**写 `float("nan")`：
+
+```python
+if not ok:
+    bad_cells.append((lineno, name, field_cn, text.strip()))
+    return cur          # 保留原值
+```
+
+**为什么这条特别要紧**：`float()` 会把 `nan` / `inf` 字面量也吃进去，所以
+`parse_cell` 额外把它们判为非法。而**设计流量一旦变成 NaN**，
+`hydro1d.py:390` 会**悄悄用 50.0 顶替**继续算——出一条看起来正常的错水位，
+全程零告警。这正是项目里反复出现的那类"静默失败"。
+
+提示文案要落到「第 N 行「断面名」的某字段：'原文本' 不是有效数字」这种粒度，
+只报一个总数等于没说。`tools/gui_smoke.py::_check_params_csv` 钉住了
+「3 处非法格 → 字段全保留、无 NaN、warning 被调用」，并做过变异测试。
 
 ---
 

@@ -1394,10 +1394,17 @@ class MainWindow(QMainWindow):
                     def fmt(val):
                         return "" if val is None or val != val else f"{val:g}"
 
+                    # 「糙率」列 = 主槽糙率（导出**真实值**）。主槽没填(None/NaN)时
+                    # 才回退到统一糙率，此时它也就是整断面糙率。
+                    # ⚠ 优先顺序是「主槽优先」，不是 `dialogs` 显示那里的「统一优先」——
+                    #    后者是给界面看的（两者本该同值），导出要保证能原样回灌。
+                    n_main = p.roughness_main
+                    if n_main is None or n_main != n_main:
+                        n_main = p.roughness
                     writer.writerow([
                         sec.name,
                         fmt(p.design_q),
-                        fmt(p.roughness),
+                        fmt(n_main),
                         fmt(p.roughness_left),
                         fmt(p.roughness_right)
                     ])
@@ -1436,11 +1443,33 @@ class MainWindow(QMainWindow):
         by_name = {sec.name: sec for sec in self.project.all_sections()}
         changed = 0
         missing = 0
+        # 解析失败的格子：**跳过该字段、保留原值**，并把 (行号, 断面名, 字段名, 原文本)
+        # 攒起来最后统一提示。绝不静默写 NaN——设计流量一旦变 NaN，
+        # `hydro1d` 会悄悄用 50.0 顶替（见 `hydro1d.py:390`），出错水位且不报错。
+        bad_cells: list[tuple[int, str, str, str]] = []
 
-        for row in rows:
+        def parse_cell(text: str):
+            """返回 (值, 是否合法)。空白 -> (None, True) 表示"未填"。
+
+            `float()` 顺带接受 `nan` / `inf` 这类字面量，但它们不是有效参数，
+            按非法处理——否则用户能从 CSV 里把 nan 灌进来。
+            """
+            s = text.strip()
+            if not s:
+                return None, True
+            try:
+                v = float(s)
+            except ValueError:
+                return None, False
+            if v != v or v in (float("inf"), float("-inf")):
+                return None, False
+            return v, True
+
+        for lineno, row in enumerate(rows, start=2):   # 第 1 行是表头
             if not row or len(row) < 5:
                 continue
-            name, design_q, roughness, r_left, r_right = row[:5]
+            name, s_design_q, s_roughness, s_left, s_right = row[:5]
+            name = name.strip()
             if name not in by_name:
                 missing += 1
                 continue
@@ -1448,28 +1477,35 @@ class MainWindow(QMainWindow):
             sec = by_name[name]
             p = sec.params
 
-            def parse_val(s):
-                s = s.strip()
-                if not s:
-                    return None
-                try:
-                    return float(s)
-                except ValueError:
-                    return float("nan")
+            def take(text: str, field_cn: str, cur):
+                """解析一格：合法则返回新值，非法则记一笔并返回原值。"""
+                v, ok = parse_cell(text)
+                if not ok:
+                    bad_cells.append((lineno, name, field_cn, text.strip()))
+                    return cur
+                return v
 
-            dq = parse_val(design_q)
+            # 设计流量 / 左右滩糙率：留空表示"未填"
+            dq = take(s_design_q, "设计流量", p.design_q)
             p.design_q = dq if dq is not None else float("nan")
 
-            r = parse_val(roughness)
-            p.roughness = r if r is not None else float("nan")
+            left = take(s_left, "左岸糙率", p.roughness_left)
+            right = take(s_right, "右岸糙率", p.roughness_right)
 
-            p.roughness_left = parse_val(r_left)
-            p.roughness_right = parse_val(r_right)
-            # if both are empty/None, roughness_main should also be None to fall back
-            if p.roughness_left is None and p.roughness_right is None:
-                p.roughness_main = None
-            else:
-                p.roughness_main = p.roughness # Ensure main is set if zoned
+            # 「糙率」列 = 主槽糙率。左右滩填了 -> 分区糙率，写 roughness_main；
+            # 左右滩都为空 -> 整断面糙率，写 roughness 并清掉分区字段。
+            # （与 `dialogs.BatchDialog.collect` 按分区开关分流的口径一致；
+            #  旧代码无条件 `roughness_main = roughness`，会把分区糙率冲掉。）
+            n_val = take(s_roughness, "糙率", None)
+            zoned = left is not None or right is not None
+            if n_val is not None:
+                if zoned:
+                    p.roughness_main = n_val
+                else:
+                    p.roughness = n_val
+                    p.roughness_main = None
+            p.roughness_left = left
+            p.roughness_right = right
 
             changed += 1
 
@@ -1484,7 +1520,22 @@ class MainWindow(QMainWindow):
         msg = f"已从 CSV 导入更新了 {changed} 个断面的参数。"
         if missing > 0:
             msg += f" 有 {missing} 个断面在当前工程中未找到，已跳过。"
+        if bad_cells:
+            msg += f" 有 {len(bad_cells)} 个数值无法解析，已跳过（保留原值）。"
         self.lbl_status.setText(msg)
+
+        if bad_cells:
+            # 最多列 15 条，避免刷屏；超出只报个数。
+            shown = bad_cells[:15]
+            detail = "\n".join(
+                f"　第 {ln} 行「{nm}」的{fd}：{raw!r} 不是有效数字，已跳过（保留原值）"
+                for ln, nm, fd, raw in shown)
+            if len(bad_cells) > len(shown):
+                detail += f"\n　……另有 {len(bad_cells) - len(shown)} 处未列出"
+            QMessageBox.warning(
+                self, "部分数值未导入",
+                f"以下单元格无法解析为数字，已跳过并保留原值：\n\n{detail}\n\n"
+                f"其余数值已正常导入。")
 
     # ---------------- 导出 ----------------
     def _export(self):

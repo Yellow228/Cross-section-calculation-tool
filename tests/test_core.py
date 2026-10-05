@@ -1352,6 +1352,161 @@ class TestParams(unittest.TestCase):
         self.assertAlmostEqual(merged["CS0"].slope, 0.004)       # 留空则沿用
         self.assertAlmostEqual(merged["CS0"].design_q, 40.0)
 
+
+class TestParamsCsvRoundtrip(unittest.TestCase):
+    """参数 CSV 导出/导入的口径（对应「编辑」菜单下的 导出/导入参数数据）。
+
+    这里不建 Qt 窗口，只锁住**导入导出共用的那套规则**，规则本体在
+    `main_window._export_params_csv` / `_import_params_csv` 里。之所以要在
+    这里守着，是因为这两条规则踩过一次：
+      * 导出列取「主槽优先」而非「统一优先」——否则分区糙率回灌时会被冲掉；
+      * 解析失败必须**跳过该字段并保留原值**，不能静默写 NaN
+        （设计流量一旦成 NaN，`hydro1d` 会悄悄用 50.0 顶替）。
+    """
+
+    def _export_cell(self, p: SectionParams) -> str:
+        """复刻导出时「糙率」列的取值：主槽优先，没填才回退统一糙率。"""
+        n_main = p.roughness_main
+        if n_main is None or n_main != n_main:
+            n_main = p.roughness
+        return "" if n_main is None or n_main != n_main else f"{n_main:g}"
+
+    def _parse_cell(self, text: str):
+        """复刻导入时的单格解析：(值, 是否合法)。空白算「未填」=合法。"""
+        s = text.strip()
+        if not s:
+            return None, True
+        try:
+            v = float(s)
+        except ValueError:
+            return None, False
+        if v != v or v in (float("inf"), float("-inf")):
+            return None, False
+        return v, True
+
+    def _apply_row(self, p: SectionParams, n_cell: str, left_cell: str,
+                   right_cell: str) -> list:
+        """复刻一行的导入：返回非法字段名列表。"""
+        bad = []
+        left, ok_l = self._parse_cell(left_cell)
+        right, ok_r = self._parse_cell(right_cell)
+        if not ok_l:
+            bad.append("roughness_left")
+            left = p.roughness_left
+        if not ok_r:
+            bad.append("roughness_right")
+            right = p.roughness_right
+
+        n_val, ok_n = self._parse_cell(n_cell)
+        if not ok_n:
+            bad.append("糙率")
+            n_val = None
+
+        zoned = left is not None or right is not None
+        if n_val is not None:
+            if zoned:
+                p.roughness_main = n_val
+            else:
+                p.roughness = n_val
+                p.roughness_main = None
+        p.roughness_left = left
+        p.roughness_right = right
+        return bad
+
+    def test_export_uses_main_roughness_not_unified(self):
+        """主槽 0.030、统一 0.035 时，导出列必须是 0.030（能原样回灌）。"""
+        p = SectionParams("A", roughness=0.035, roughness_main=0.030,
+                          roughness_left=0.040, roughness_right=0.045)
+        self.assertEqual(self._export_cell(p), "0.03")
+
+    def test_export_falls_back_to_unified_when_no_zone(self):
+        """没填主槽糙率时，导出列回退到统一糙率（此时它就是整断面糙率）。"""
+        p = SectionParams("B", roughness=0.03, roughness_main=None)
+        self.assertEqual(self._export_cell(p), "0.03")
+
+    def test_export_blank_when_both_missing(self):
+        p = SectionParams("C", roughness=float("nan"), roughness_main=None)
+        self.assertEqual(self._export_cell(p), "")
+
+    def test_zoned_roundtrip_is_lossless(self):
+        """分区断面的四个值，往返一轮后必须逐位不变。"""
+        p = SectionParams("A", roughness=0.035, roughness_main=0.030,
+                          roughness_left=0.040, roughness_right=0.045)
+        before = (p.roughness, p.roughness_main, p.roughness_left, p.roughness_right)
+        # 导出 -> 回灌
+        cell = self._export_cell(p)
+        bad = self._apply_row(p, cell, "0.04", "0.045")
+        self.assertEqual(bad, [])
+        after = (p.roughness, p.roughness_main, p.roughness_left, p.roughness_right)
+        self.assertEqual(before, after)
+
+    def test_unzoned_roundtrip_keeps_zone_fields_none(self):
+        """整断面断面往返后，三个分区字段应仍为 None（不该被写成数值）。"""
+        p = SectionParams("B", roughness=0.03, roughness_main=None,
+                          roughness_left=None, roughness_right=None)
+        cell = self._export_cell(p)
+        self._apply_row(p, cell, "", "")
+        self.assertAlmostEqual(p.roughness, 0.03)
+        self.assertIsNone(p.roughness_main)
+        self.assertIsNone(p.roughness_left)
+        self.assertIsNone(p.roughness_right)
+
+    def test_unzoned_import_writes_unified_and_clears_zones(self):
+        """左右滩留空 = 整断面模式：糙率列写 roughness，并清掉分区字段。"""
+        p = SectionParams("D", roughness=0.03, roughness_main=0.03,
+                          roughness_left=0.04, roughness_right=0.045)
+        self._apply_row(p, "0.033", "", "")
+        self.assertAlmostEqual(p.roughness, 0.033)
+        self.assertIsNone(p.roughness_main)
+        self.assertIsNone(p.roughness_left)
+        self.assertIsNone(p.roughness_right)
+
+    def test_invalid_roughness_is_skipped_not_written_nan(self):
+        """糙率格非法 -> 跳过并报出，绝不能写 NaN 或覆盖原值。"""
+        p = SectionParams("A", roughness=0.035, roughness_main=0.030,
+                          roughness_left=0.040, roughness_right=0.045)
+        bad = self._apply_row(p, "0.035。", "0.04", "0.045")
+        self.assertIn("糙率", bad)
+        self.assertAlmostEqual(p.roughness_main, 0.030)   # 原值保住
+        self.assertAlmostEqual(p.roughness, 0.035)
+        self.assertFalse(p.roughness_main != p.roughness_main)   # 不是 NaN
+
+    def test_invalid_design_q_reports_and_keeps_old(self):
+        """设计流量非法时必须报出来——写成 NaN 会让 hydro1d 悄悄用 50.0。"""
+        v, ok = self._parse_cell("120 m3/s")
+        self.assertFalse(ok)
+        self.assertIsNone(v)
+
+    def test_parse_accepts_common_valid_forms(self):
+        for raw, want in [("0.035", 0.035), ("1.2e2", 120.0),
+                          ("１２０", 120.0), ("  0.03  ", 0.03)]:
+            v, ok = self._parse_cell(raw)
+            self.assertTrue(ok, f"{raw!r} 应被接受")
+            self.assertAlmostEqual(v, want)
+
+    def test_parse_rejects_nan_inf_literals(self):
+        """`float()` 认 nan/inf，但它们不是有效参数，必须按非法处理。"""
+        for raw in ["nan", "NaN", "inf", "-inf", "Infinity"]:
+            v, ok = self._parse_cell(raw)
+            self.assertFalse(ok, f"{raw!r} 应被拒绝")
+            self.assertIsNone(v)
+
+    def test_parse_blank_means_unfilled(self):
+        for raw in ["", "   "]:
+            v, ok = self._parse_cell(raw)
+            self.assertTrue(ok)
+            self.assertIsNone(v)
+
+
+class TestParamsRowsHelpers(unittest.TestCase):
+    """`params.to_rows` / `missing_params` 的既有契约（原属 TestParams）。"""
+
+    def _secs(self):
+        return [Section(name=f"CS{i}", x=[0.0, 1.0], y=[0.0, 1.0],
+                        s=[0.0, 1.0], z=[10.0, 9.0],
+                        params=SectionParams(name=f"CS{i}"))
+                for i in range(3)]
+
     def test_to_rows_roundtrip(self):
         secs = self._secs()
         params.apply_batch(secs, slope=0.004, roughness=0.03, design_q=40.0)
