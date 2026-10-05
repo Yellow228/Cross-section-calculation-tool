@@ -179,6 +179,16 @@ class MainWindow(QMainWindow):
                                 "左侧表格直接改数值，右侧断面图可拖动测点")
         act_edit_sec.triggered.connect(self._open_section_editor)
 
+        m_edit.addSeparator()
+
+        act_export_params = m_edit.addAction("导出参数数据")
+        act_export_params.setToolTip("将所有横断面的设计流量、糙率导出为 CSV 格式表格")
+        act_export_params.triggered.connect(self._export_params_csv)
+
+        act_import_params = m_edit.addAction("导入参数数据")
+        act_import_params.setToolTip("从 CSV 格式表格导入并更新横断面的设计流量、糙率")
+        act_import_params.triggered.connect(self._import_params_csv)
+
         act_set = mb.addAction("计算设置")
         act_set.setToolTip("断面模式 / 水位步长 / 桩号原点 / 陡坡·缓坡阈值 / CSV 编码")
         act_set.triggered.connect(self.dlg_settings.popup)
@@ -1356,6 +1366,125 @@ class MainWindow(QMainWindow):
                                    line_index=max(self.lst_lines.currentRow(), 0))
         # 两个手动调节面板也要跟着走，否则会出现"面板显示的是别的断面"
         self._refresh_manual_panels()
+
+    # ---------------- 导出与导入参数 ----------------
+    def _export_params_csv(self):
+        if self.project is None:
+            QMessageBox.information(self, "提示", "请先载入数据。")
+            return
+
+        start = project_io.suggest_path(self.project, self.cfg.output_dir or app_root())
+        if start.endswith(project_io.SUFFIX):
+            start = start[:-len(project_io.SUFFIX)]
+        start += "_参数表.csv"
+
+        path, _ = QFileDialog.getSaveFileName(self, "导出参数数据", start, "CSV 文件 (*.csv)")
+        if not path:
+            return
+
+        import csv
+        encoding = self.cfg.csv_encoding
+        try:
+            with open(path, "w", encoding=encoding, newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["横断面名称", "设计流量", "糙率", "左岸糙率", "右岸糙率"])
+                for sec in self.project.all_sections():
+                    p = sec.params
+
+                    def fmt(val):
+                        return "" if val is None or val != val else f"{val:g}"
+
+                    writer.writerow([
+                        sec.name,
+                        fmt(p.design_q),
+                        fmt(p.roughness),
+                        fmt(p.roughness_left),
+                        fmt(p.roughness_right)
+                    ])
+            self.lbl_status.setText(f"参数数据已导出到：{path}")
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", f"{e}\n\n{traceback.format_exc()}")
+
+    def _import_params_csv(self):
+        if self.project is None:
+            QMessageBox.information(self, "提示", "请先载入数据。")
+            return
+
+        start = project_io.suggest_path(self.project, self.cfg.output_dir or app_root())
+        if start.endswith(project_io.SUFFIX):
+            start = start[:-len(project_io.SUFFIX)]
+        start = os.path.dirname(start)
+
+        path, _ = QFileDialog.getOpenFileName(self, "导入参数数据", start, "CSV 文件 (*.csv)")
+        if not path:
+            return
+
+        import csv
+        encoding = self.cfg.csv_encoding
+        try:
+            with open(path, "r", encoding=encoding, newline="") as f:
+                reader = csv.reader(f)
+                header = next(reader, None)
+                if not header or header != ["横断面名称", "设计流量", "糙率", "左岸糙率", "右岸糙率"]:
+                    raise ValueError("CSV表头不匹配，请使用导出的参数表格格式。")
+
+                rows = list(reader)
+        except Exception as e:
+            QMessageBox.critical(self, "读取失败", f"{e}")
+            return
+
+        by_name = {sec.name: sec for sec in self.project.all_sections()}
+        changed = 0
+        missing = 0
+
+        for row in rows:
+            if not row or len(row) < 5:
+                continue
+            name, design_q, roughness, r_left, r_right = row[:5]
+            if name not in by_name:
+                missing += 1
+                continue
+
+            sec = by_name[name]
+            p = sec.params
+
+            def parse_val(s):
+                s = s.strip()
+                if not s:
+                    return None
+                try:
+                    return float(s)
+                except ValueError:
+                    return float("nan")
+
+            dq = parse_val(design_q)
+            p.design_q = dq if dq is not None else float("nan")
+
+            r = parse_val(roughness)
+            p.roughness = r if r is not None else float("nan")
+
+            p.roughness_left = parse_val(r_left)
+            p.roughness_right = parse_val(r_right)
+            # if both are empty/None, roughness_main should also be None to fall back
+            if p.roughness_left is None and p.roughness_right is None:
+                p.roughness_main = None
+            else:
+                p.roughness_main = p.roughness # Ensure main is set if zoned
+
+            changed += 1
+
+        if changed > 0:
+            self._recalc()
+            self._refresh_current_views()
+            self.param_panel.refresh_status()
+            if self.dlg_batch.isVisible():
+                self.dlg_batch.refresh_from_params()
+            self._set_dirty()
+
+        msg = f"已从 CSV 导入更新了 {changed} 个断面的参数。"
+        if missing > 0:
+            msg += f" 有 {missing} 个断面在当前工程中未找到，已跳过。"
+        self.lbl_status.setText(msg)
 
     # ---------------- 导出 ----------------
     def _export(self):
