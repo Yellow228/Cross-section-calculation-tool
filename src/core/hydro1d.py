@@ -422,9 +422,11 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                     z_min_up, z_max_up, cfg,
                     info_down=infos[i-1], info_up=infos[i], diag=d
                 )
-                _note(i, d)
                 Z_crit = compute_critical_depth(sec_up, Qs[i], z_min_up, z_max_up)
-                res_levels[i] = max(Z_up, Z_crit)
+                if Z_up < Z_crit:
+                    d["crossed_critical"] = True
+                _note(i, d)
+                res_levels[i] = Z_up
         else:
             # 急流：从上游推下游 (n-1 -> 0)
             res_levels[-1] = Z_initials[-1]
@@ -441,9 +443,11 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                     z_min_down, z_max_down, cfg,
                     info_up=infos[i+1], info_down=infos[i], diag=d
                 )
-                _note(i, d)
                 Z_crit = compute_critical_depth(sec_down, Qs[i], z_min_down, z_max_down)
-                res_levels[i] = min(Z_down, Z_crit)
+                if Z_down > Z_crit:
+                    d["crossed_critical"] = True
+                _note(i, d)
+                res_levels[i] = Z_down
     else:
         # 索引 n-1 是下游
         if regime == "subcritical":
@@ -462,9 +466,11 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                     z_min_up, z_max_up, cfg,
                     info_down=infos[i+1], info_up=infos[i], diag=d
                 )
-                _note(i, d)
                 Z_crit = compute_critical_depth(sec_up, Qs[i], z_min_up, z_max_up)
-                res_levels[i] = max(Z_up, Z_crit)
+                if Z_up < Z_crit:
+                    d["crossed_critical"] = True
+                _note(i, d)
+                res_levels[i] = Z_up
         else:
             # 急流：从上游推下游 (0 -> n-1)
             res_levels[0] = Z_initials[0]
@@ -481,9 +487,11 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                     z_min_down, z_max_down, cfg,
                     info_up=infos[i-1], info_down=infos[i], diag=d
                 )
-                _note(i, d)
                 Z_crit = compute_critical_depth(sec_down, Qs[i], z_min_down, z_max_down)
-                res_levels[i] = min(Z_down, Z_crit)
+                if Z_down > Z_crit:
+                    d["crossed_critical"] = True
+                _note(i, d)
+                res_levels[i] = Z_down
 
     if warnings is not None:
         warnings.extend(_hydro1d_warnings(line, _diags))
@@ -495,13 +503,22 @@ def _hydro1d_warnings(line: ProfileLine, diags: list[tuple[str, dict]]
     """把二分求根的诊断汇总成用户能照做的告警。
 
     只报**真出了事**的断面：要么解贴边（真解可能在区间外，水位不可信），
-    要么残差没收敛（迭代用尽仍不满足能量方程）。两种情况原实现都静默返回
-    一个数字，用户完全没有线索。
+    要么残差没收敛（迭代用尽仍不满足能量方程），要么越过了临界水深。
+    两种情况原实现都静默返回一个数字，用户完全没有线索。
     """
     clipped = [(nm, d) for nm, d in diags if d.get("clipped")]
     unconv = [(nm, d) for nm, d in diags if not d.get("converged")]
+    crossed = [(nm, d) for nm, d in diags if d.get("crossed_critical")]
 
     out: list[str] = []
+
+    if crossed:
+        names = "、".join(nm for nm, _ in crossed[:5])
+        more = f" 等 {len(crossed)} 个" if len(crossed) > 5 else ""
+        out.append(
+            f"一维推算：{names}{more} 断面的计算水位越过了临界水深，"
+            f"可能出现了流态转变或需要进行混合流态分析。当前结果未作强制钳制，请核查。"
+        )
     if clipped:
         names = "、".join(nm for nm, _ in clipped[:5])
         more = f" 等 {len(clipped)} 个" if len(clipped) > 5 else ""
