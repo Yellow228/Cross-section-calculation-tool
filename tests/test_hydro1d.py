@@ -70,10 +70,43 @@ class TestHydro1D(unittest.TestCase):
         }
         from src.core.config import Config
         cfg = Config()
-        levels = compute_hydro1d_profile(line, cfg, results)
+        warnings = []
+        levels = compute_hydro1d_profile(line, cfg, results, warnings=warnings)
         self.assertEqual(len(levels), 2)
         self.assertAlmostEqual(levels[0], 11.979, places=2)
         self.assertEqual(levels[1], 12.0)
+
+    def test_regime_transition_warning(self):
+        # 制造一个急流产生流态转换的情况
+        from src.core.config import Config
+        cfg = Config()
+
+        # S1 在上游 (z=10.0), S2 在下游 (z=9.0)
+        sec_up = Section(name="S1", x=[0, 10], y=[0, 0], s=[0, 10], z=[10.0, 10.0], params=SectionParams(name="S1", design_q=50.0))
+        sec_down = Section(name="S2", x=[0, 10], y=[100, 100], s=[0, 10], z=[9.0, 9.0], params=SectionParams(name="S2", design_q=50.0))
+
+        line = ProfileLine(
+            name="test_regime",
+            sections=[sec_up, sec_down],
+            chainage=[0.0, 100.0],
+            hydro1d_enabled=True,
+            hydro1d_regime="supercritical"
+        )
+
+        class DummyResult:
+            def __init__(self, dl):
+                self.design_level = dl
+
+        results = {
+            "S1": DummyResult(11.0),
+            "S2": DummyResult(12.0)
+        }
+
+        warnings = []
+        levels = compute_hydro1d_profile(line, cfg, results, warnings=warnings)
+
+        # 验证产生了流态转换警告
+        self.assertTrue(any("断面发生流态转换" in w for w in warnings))
 
 if __name__ == "__main__":
     unittest.main()
