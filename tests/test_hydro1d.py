@@ -72,10 +72,11 @@ class TestHydro1D(unittest.TestCase):
         from src.core.config import Config
         cfg = Config()
         warnings = []
-        levels = compute_hydro1d_profile(line, cfg, results, warnings=warnings)
+        levels, nodes = compute_hydro1d_profile(line, cfg, results, warnings=warnings)
         self.assertEqual(len(levels), 2)
         self.assertAlmostEqual(levels[0], 11.92, places=2)
         self.assertEqual(levels[1], 12.0)
+        self.assertEqual(len(nodes), 2)
 
     def test_regime_transition_warning(self):
         # 制造一个急流产生流态转换的情况

@@ -32,6 +32,8 @@ class HydroNode:
     #: 分区要 cfg + TerrainInfo，而 dataclass 字段拿不到它们。
     #: 分区口径必须与 `rating.py`（H~Q 曲线）一致，见 `zone_conductance`。
     K: float = 0.0
+    Z_crit: float = float('nan') # 临界水深/水位
+    hl: Optional[float] = None   # 上游至该断面的水头损失 (Head Loss)
 
     @property
     def H(self) -> float:
@@ -349,7 +351,7 @@ def downstream_index(sections: list[Section], infos: list) -> int:
 
 
 def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
-                            warnings: list[str] = None) -> list[float]:
+                            warnings: list[str] = None) -> tuple[list[float], list['HydroNode']]:
     """计算整条纵断面线的一维水动力水位，返回推算的水位列表，与 sections 等长。
 
     warnings：出参。传入一个 list 时，会把"二分求根贴边/不收敛"这类
@@ -367,10 +369,11 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
             res_data = results.get(sec.name)
             if res_data and not math.isnan(res_data.design_level):
                 res[i] = res_data.design_level
-        return res
+        return res, [None] * n
 
     # 初始化返回数组
     res_levels = [float('nan')] * n
+    res_nodes: list[Optional[HydroNode]] = [None] * n
 
     # 提取各断面参数
     Z_initials = []
@@ -411,6 +414,35 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
 
     def _note(i: int, d: dict) -> None:
         _diags.append((sections[i].name, d))
+
+    def calc_and_record_nodes():
+        for i in range(n):
+            if math.isnan(res_levels[i]):
+                continue
+            z_min_sec = min(sections[i].z) + 0.01
+            z_max_sec = max(sections[i].z) + 10.0
+            node = get_node_state(sections[i], res_levels[i], Qs[i], dists[i], cfg, infos[i])
+            node.Z_crit = compute_critical_depth(sections[i], Qs[i], z_min_sec, z_max_sec)
+            res_nodes[i] = node
+
+        # 根据流向计算水头损失
+        # 水头损失(hl)计算：hl = H_upstream - H_downstream
+        if ds_idx == 0:
+            # 索引 0 是下游, 索引 n-1 是上游
+            for i in range(n - 1): # i 从 0 到 n-2 (不包括最上游 n-1)
+                # 计算当前节点 i 的水头损失，需要其相邻上游节点 i+1
+                curr_node = res_nodes[i]
+                up_node = res_nodes[i+1]
+                if curr_node and up_node:
+                    curr_node.hl = up_node.H - curr_node.H
+        else:
+            # 索引 n-1 是下游, 索引 0 是上游
+            for i in range(1, n): # i 从 1 到 n-1 (不包括最上游 0)
+                # 计算当前节点 i 的水头损失，需要其相邻上游节点 i-1
+                curr_node = res_nodes[i]
+                up_node = res_nodes[i-1]
+                if curr_node and up_node:
+                    curr_node.hl = up_node.H - curr_node.H
 
     if ds_idx == 0:
         # 索引 0 是下游
@@ -505,9 +537,11 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                 _note(i, d)
                 res_levels[i] = Z_down
 
+    calc_and_record_nodes()
+
     if warnings is not None:
         warnings.extend(_hydro1d_warnings(line, _diags))
-    return res_levels
+    return res_levels, res_nodes
 
 
 def _hydro1d_warnings(line: ProfileLine, diags: list[tuple[str, dict]]
