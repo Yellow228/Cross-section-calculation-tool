@@ -516,9 +516,8 @@ def _hydro1d_warnings(line: ProfileLine, diags: list[tuple[str, dict]]
         names = "、".join(nm for nm, _ in crossed[:5])
         more = f" 等 {len(crossed)} 个" if len(crossed) > 5 else ""
         out.append(
-            f"一维推算：{names}{more} 断面的计算水位越过了临界水深，"
-            f"可能出现了流态转变或需要进行混合流态分析。当前结果未作强制钳制，请核查。"
-        )
+            f"一维推算：{names}{more} 断面发生流态转换（计算水位穿越临界水深），"
+            f"可能存在水跃或跌水。当前模型未显式处理混合流，结果仅供参考。")
     if clipped:
         names = "、".join(nm for nm, _ in clipped[:5])
         more = f" 等 {len(clipped)} 个" if len(clipped) > 5 else ""
@@ -537,10 +536,4 @@ def _hydro1d_warnings(line: ProfileLine, diags: list[tuple[str, dict]]
         out.append(
             f"一维推算：{names}{more} 断面未收敛（能量方程残差最大 {worst:.4g} m），"
             f"水位结果仅供参考。常见原因是断面间距过大或几何突变。")
-    if regime_trans:
-        names = "、".join(nm for nm, _ in regime_trans[:5])
-        more = f" 等 {len(regime_trans)} 个" if len(regime_trans) > 5 else ""
-        out.append(
-            f"一维推算：{names}{more} 断面发生流态转换（计算水位穿越临界水深），"
-            f"可能存在水跃或跌水。当前模型未显式处理混合流，结果仅供参考。")
     return out
