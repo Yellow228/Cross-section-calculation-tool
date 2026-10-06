@@ -135,13 +135,16 @@ def get_node_state(sec: Section, Z: float, Q: float, dist: float, cfg, info=None
     alpha = cfg.kinetic_alpha
     if cfg.kinetic_alpha_auto and cfg.compound_mode and len(A_sub) > 1:
         # alpha = sum(K_i^3 / A_i^2) / (K_tot^3 / A_tot^2)，复用上面同一份 K_i
+        # 严谨对标 HEC-RAS：A_tot 需是有效算入分区的面积总和，防止因微小舍入或区间裁剪导致与总 A 产生漂移
         sum_k3_a2 = 0.0
+        valid_A_tot = 0.0
         for i, K_i in enumerate(k_sub):
             A_i = A_sub[i]
             if A_i > 1e-6:
                 sum_k3_a2 += (K_i ** 3) / (A_i ** 2)
-        if k_tot > 1e-6 and A > 1e-6:
-            alpha = sum_k3_a2 / ((k_tot ** 3) / (A ** 2))
+                valid_A_tot += A_i
+        if k_tot > 1e-6 and valid_A_tot > 1e-6:
+            alpha = sum_k3_a2 / ((k_tot ** 3) / (valid_A_tot ** 2))
 
     return HydroNode(sec=sec, dist=dist, Q=Q, Z=Z, A=A, B=B, R=R, V=V, Fr=Fr,
                      alpha=alpha, K=k_tot)
@@ -256,8 +259,10 @@ def standard_step_method_subcritical(
 
     def energy_diff(Z_up_guess: float) -> float:
         node_u = get_node_state(sec_up, Z_up_guess, Q_up, dist_up, cfg, info_up)
-        # 摩擦水头损失
-        Sf_avg = (node_d.Sf + node_u.Sf) / 2
+        # 摩擦水头损失: 对标 HEC-RAS 默认使用 平均输水能力法 (Average Conveyance Equation)
+        K_avg = (node_d.K + node_u.K) / 2.0
+        Q_avg = (Q_down + Q_up) / 2.0
+        Sf_avg = (Q_avg / K_avg) ** 2 if K_avg > 1e-6 else 0.0
         hf = Sf_avg * L
         # 局部水头损失 (收缩/扩张)
         is_contraction = node_u.V > node_d.V
@@ -266,7 +271,7 @@ def standard_step_method_subcritical(
         # 优先使用断面的手动局部水头损失系数
         sec_loss = sec_up.hydro_loss_contraction if is_contraction else sec_up.hydro_loss_expansion
         C_e = default_loss if sec_loss is None else sec_loss
-        he = C_e * abs((node_u.V ** 2) / (2 * 9.81) - (node_d.V ** 2) / (2 * 9.81))
+        he = C_e * abs(node_u.alpha * (node_u.V ** 2) / (2 * 9.81) - node_d.alpha * (node_d.V ** 2) / (2 * 9.81))
 
         # 能量方程: H_up = H_down + hf + he
         return node_u.H - (node_d.H + hf + he)
@@ -304,7 +309,10 @@ def standard_step_method_supercritical(
 
     def energy_diff(Z_down_guess: float) -> float:
         node_d = get_node_state(sec_down, Z_down_guess, Q_down, dist_down, cfg, info_down)
-        Sf_avg = (node_d.Sf + node_u.Sf) / 2
+        # 摩擦水头损失: 对标 HEC-RAS 默认使用 平均输水能力法 (Average Conveyance Equation)
+        K_avg = (node_d.K + node_u.K) / 2.0
+        Q_avg = (Q_down + Q_up) / 2.0
+        Sf_avg = (Q_avg / K_avg) ** 2 if K_avg > 1e-6 else 0.0
         hf = Sf_avg * L
         is_contraction = node_d.V > node_u.V
         default_loss = 0.1 if is_contraction else 0.3
@@ -312,7 +320,7 @@ def standard_step_method_supercritical(
         # 优先使用断面的手动局部水头损失系数
         sec_loss = sec_down.hydro_loss_contraction if is_contraction else sec_down.hydro_loss_expansion
         C_e = default_loss if sec_loss is None else sec_loss
-        he = C_e * abs((node_u.V ** 2) / (2 * 9.81) - (node_d.V ** 2) / (2 * 9.81))
+        he = C_e * abs(node_u.alpha * (node_u.V ** 2) / (2 * 9.81) - node_d.alpha * (node_d.V ** 2) / (2 * 9.81))
 
         # 能量方程: H_up = H_down + hf + he
         return node_u.H - (node_d.H + hf + he)
@@ -425,6 +433,7 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                 Z_crit = compute_critical_depth(sec_up, Qs[i], z_min_up, z_max_up)
                 if Z_up < Z_crit:
                     d["crossed_critical"] = True
+                    Z_up = Z_crit
                 _note(i, d)
                 res_levels[i] = Z_up
         else:
@@ -446,6 +455,7 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                 Z_crit = compute_critical_depth(sec_down, Qs[i], z_min_down, z_max_down)
                 if Z_down > Z_crit:
                     d["crossed_critical"] = True
+                    Z_down = Z_crit
                 _note(i, d)
                 res_levels[i] = Z_down
     else:
@@ -469,6 +479,7 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                 Z_crit = compute_critical_depth(sec_up, Qs[i], z_min_up, z_max_up)
                 if Z_up < Z_crit:
                     d["crossed_critical"] = True
+                    Z_up = Z_crit
                 _note(i, d)
                 res_levels[i] = Z_up
         else:
@@ -490,6 +501,7 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                 Z_crit = compute_critical_depth(sec_down, Qs[i], z_min_down, z_max_down)
                 if Z_down > Z_crit:
                     d["crossed_critical"] = True
+                    Z_down = Z_crit
                 _note(i, d)
                 res_levels[i] = Z_down
 
