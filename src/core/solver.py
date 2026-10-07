@@ -82,10 +82,11 @@ def solve_profile_line(line: ProfileLine, cfg: Config, results: dict,
     那些情况原本是**静默**返回一个不可信的水位，界面上完全看不出来。
     """
     if line.hydro1d_enabled:
-        line.hydro1d_levels = compute_hydro1d_profile(line, cfg, results,
-                                                      warnings=warnings)
+        line.hydro1d_levels, line.hydro1d_nodes = compute_hydro1d_profile(line, cfg, results,
+                                                                          warnings=warnings)
     else:
         line.hydro1d_levels = [float('nan')] * len(line.sections)
+        line.hydro1d_nodes = [None] * len(line.sections)
 
 
 def _edge_point(sec: Section, cfg: Config, z: list[float], H: float,

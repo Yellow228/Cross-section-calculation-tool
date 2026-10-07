@@ -146,6 +146,7 @@ class ExportOptionsDialog(QDialog):
             'range_raised': QCheckBox("设计水位加高淹没范围坐标.csv"),
             'hydro1d': QCheckBox("一维推算水面线.csv (仅已启用的线)"),
             'hydro1d_range': QCheckBox("一维推算水面线淹没范围坐标.csv (仅已启用的线)"),
+            'hydro1d_table': QCheckBox("一维推算水力要素表.csv (仅已启用的线)"),
         }
 
         # 默认只勾选用户要求的三项

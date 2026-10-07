@@ -328,6 +328,7 @@ class ProfileLine:
     hydro1d_enabled: bool = False
     hydro1d_regime: str = "subcritical"  # 'subcritical', 'supercritical', 'mixed', 'auto'
     hydro1d_levels: list[float] = field(default_factory=list)  # 与 sections 等长的推算水位结果
+    hydro1d_nodes: list[Any] = field(default_factory=list)     # 与 sections 等长的详细水力计算节点状态 (HydroNode)
 
 
 @dataclass
