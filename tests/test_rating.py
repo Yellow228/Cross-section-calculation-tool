@@ -62,5 +62,36 @@ class TestRatingCurve(unittest.TestCase):
         if len(qvec) > 1:
             self.assertTrue(any(q > 0.0 for q in qvec))
 
+    def test_rating_zero_division_safety(self):
+        """Test that rating curve avoids division by zero when wetted perimeter evaluates to 0."""
+        from src.core.rating import compute_rating_curve
+        from src.core.model import Section, SectionParams, TerrainInfo
+        from src.core.config import Config
+        import src.core.rating
+
+        # Setup standard context
+        sec = Section(name="Test", x=[0, 10], y=[0, 0], s=[0, 10], z=[10, 10])
+        sec.params = SectionParams(name="Test", slope=0.001)
+
+        info = TerrainInfo(dmin=10, zymin=12.0, zmax=12.0, ymax=12.0, zmax_idx=0, ymax_idx=1, dmin_idx=0)
+        info.zones = [(0, 2)]
+        info.zymin_auto = 12.0
+        info.dmin_auto = 10
+
+        cfg = Config()
+        cfg.dH = 0.5
+        cfg.compound_mode = False
+
+        # Mock section_geom to simulate the edge case where A > 0 but P == 0
+        original_geom = src.core.rating.section_geom
+        src.core.rating.section_geom = lambda x, z, H: (1e-6, 0.0, 10.0)
+
+        try:
+            # Should not raise ZeroDivisionError
+            compute_rating_curve(sec, info, cfg)
+        finally:
+            # Restore mock
+            src.core.rating.section_geom = original_geom
+
 if __name__ == "__main__":
     unittest.main()

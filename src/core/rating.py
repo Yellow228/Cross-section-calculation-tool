@@ -73,7 +73,7 @@ def compute_rating_curve(sec: Section, info: TerrainInfo, cfg: Config
                 xl, xr = surface_span(s_all, z_all, H)
                 B = (xr - xl) if (xl == xl and xr == xr) else 0.0
 
-            R = A / P
+            R = A / P if P > 1e-6 else 0.0
 
             n_manning = sec.params.roughness_for_zone(iz, n_zone)
             if not n_manning or math.isnan(n_manning):
