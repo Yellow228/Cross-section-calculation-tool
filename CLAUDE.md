@@ -111,8 +111,8 @@ Q1~Q15 的用户决策记录、以及重写中自引入缺陷（M1~M5）的复�
 **改完至少跑三层**：单测（不受界面影响）→ 界面冒烟（模拟真实点击与 Excel 粘贴）
 → 打包后自检（在 frozen 环境里把整条链路再跑一遍）。
 
-- 单测共 **210 个用例**，分两类（别笼统说"纯标准库可跑"）：
-  - **202 个纯标准库**，不需要装任何依赖，系统 Python 直接就能跑
+- 单测共 **212 个用例**，分两类（别笼统说"纯标准库可跑"）：
+  - **204 个纯标准库**，不需要装任何依赖，系统 Python 直接就能跑
   - **8 个需要 openpyxl**，又分两组：
     - **4 个读 `data\` / `samples\` 的回归测试**（`test_real_data_roundtrip`、
       `test_thalweg_index_matches_terrain`、`test_real_data_roundtrip_with_overrides`、
@@ -1000,6 +1000,67 @@ if not ok:
 提示文案要落到「第 N 行「断面名」的某字段：'原文本' 不是有效数字」这种粒度，
 只报一个总数等于没说。`tools/gui_smoke.py::_check_params_csv` 钉住了
 「3 处非法格 → 字段全保留、无 NaN、warning 被调用」，并做过变异测试。
+
+---
+
+### #32 **别把"改代码脚本"提交进 `tools/`**
+
+2026-10-07 发现机器人往 `tools/` 提交了 5 个这样的文件：
+
+```python
+# tools/add_export_checkbox.py（已删）
+content = open(filepath, encoding='utf-8').read()
+content = content.replace(search, replace)     # 盲替换
+open(filepath, 'w', encoding='utf-8').write(content)
+```
+
+它们是机器人用来改源码的一次性补丁，**不是工具**。两个实证危害：
+
+1. **不幂等，再跑一次会损坏源码。** `add_export_checkbox.py` 的 `search` 串
+   在改动落地之后**仍然匹配**（被替换的那两行还在原位），所以再执行一次会往
+   字典里**重复插入**同一个键。Python 的重复字典键**不报错**（后者覆盖前者），
+   属于静默出错。
+2. **有的从一开始就没生效。** `add_export_all_table.py` 的 `search` 串写的是
+   `'hydro1d': 一维推算水面线.csv`，而真实源码是 `'hydro1d': True`——
+   `str.replace` 找不到就静默什么都不做，脚本照样正常退出。
+   "看着干完了，其实没干"。
+
+**规矩**：`tools/` 只放**可重复运行、幂等、带校验**的工具（`check_*.py` / `gui_smoke.py`
+这类）。一次性改写源码的脚本用完就删，不要提交。要改源码就用编辑器改，别用 `.replace()`。
+
+### #33 **合并 PR 之前必须跑一遍三腿**（这次 master 真的崩过）
+
+2026-10-06 那段历史里，PR #14 与 #15 合并产生冲突，留下了对 `regime_trans`
+的引用但**没有定义它** → `compute_hydro1d_profile` 直接抛 `NameError`，
+一维推算整个跑不了。后来靠 `bf35c65 Fix merge conflict in hydro1d.py crashing
+1D calculation` 才补上——那个提交信息自己写明了这一点。
+
+**也就是说 master 在那两次合并之间是坏的。** 本仓库当时已有 200+ 单测，
+跑一遍就能发现。所以：**合并前跑三腿**（单测 → `gui_smoke` → `--selftest`），
+别指望"能 import 就算过"。
+
+### #34 `compute_hydro1d_profile` 返回的是 **tuple**，不是 list
+
+2026-10-07 起（PR #18 为了拿节点细节加的）：
+
+```python
+def compute_hydro1d_profile(...) -> tuple[list[float], list['HydroNode']]:
+```
+
+调用方必须解包，`solver.py` 的写法是标准姿势：
+
+```python
+line.hydro1d_levels, line.hydro1d_nodes = compute_hydro1d_profile(line, cfg, results,
+                                                                  warnings=warnings)
+```
+
+⚠ 这是**破坏性**的签名变更——旧调用方会把 tuple 当 list 用。
+`tests/` 里有两处故意忽略返回值所以没暴露，别因此以为改签名无所谓。
+
+配套：`ProfileLine.hydro1d_nodes` 的类型标注是 `list[Any]`，
+而 `Any` 一度**没有 import**（只 import 了 `Optional`）。当时靠
+`from __future__ import annotations`（注解不求值）侥幸不报错，
+一旦有人 `typing.get_type_hints()` 就会 `NameError`。已补上 import。
 
 ---
 
