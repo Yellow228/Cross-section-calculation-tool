@@ -71,6 +71,7 @@ def zone_conductance(sec: Section, Z: float, cfg, A_sub, P_sub
             n_i = sec.params.roughness_for_zone(i, n_zone)
             if not n_i or math.isnan(n_i):
                 n_i = 0.03
+            n_i = max(n_i, 1e-6)
             k_i = A_i * (R_i ** (2/3)) / n_i
         else:
             k_i = 0.0
@@ -127,7 +128,7 @@ def get_node_state(sec: Section, Z: float, Q: float, dist: float, cfg, info=None
     B = max(B, 1e-6)
     R = A / P
     V = Q / A
-    Fr = V / math.sqrt(9.81 * (A / B))
+    Fr = V / max(math.sqrt(9.81 * (A / B)), 1e-6)
 
     # 流量模数：**无条件**按分区求（与 rating.py 的 H~Q 曲线同口径）。
     # 曾跟着 `kinetic_alpha_auto` 开关走，于是关掉 α 自动计算时
