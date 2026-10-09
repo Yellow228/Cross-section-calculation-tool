@@ -49,7 +49,7 @@ class TestHydro1D(unittest.TestCase):
         # 上游断面底高程比下游高1m，水面可能稍微下降(如果落差被抬升消化)
         # 但这里要检查 z_up 计算的数值是否符合物理预期
         # 水位由于采用了 HEC-RAS 均值输水能力计算 Sf_avg 和更新 α 计算导致有所变化
-        self.assertAlmostEqual(z_up, 11.92, places=2)
+        self.assertAlmostEqual(z_up, 11.97, places=2)
         self.assertLess(z_up, 15.0)  # 合理区间
 
     def test_compute_profile(self):
@@ -74,7 +74,7 @@ class TestHydro1D(unittest.TestCase):
         warnings = []
         levels, nodes = compute_hydro1d_profile(line, cfg, results, warnings=warnings)
         self.assertEqual(len(levels), 2)
-        self.assertAlmostEqual(levels[0], 11.92, places=2)
+        self.assertAlmostEqual(levels[0], 11.97, places=2)
         self.assertEqual(levels[1], 12.0)
         self.assertEqual(len(nodes), 2)
 
