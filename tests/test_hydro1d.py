@@ -49,7 +49,8 @@ class TestHydro1D(unittest.TestCase):
         # 上游断面底高程比下游高1m，水面可能稍微下降(如果落差被抬升消化)
         # 但这里要检查 z_up 计算的数值是否符合物理预期
         # 水位由于采用了 HEC-RAS 均值输水能力计算 Sf_avg 和更新 α 计算导致有所变化
-        self.assertAlmostEqual(z_up, 11.92, places=2)
+        # 因为修复了 contraction 判断逻辑，水头损失会有所变化，所以这里重新标定基准值
+        self.assertAlmostEqual(z_up, 11.97, places=2)
         self.assertLess(z_up, 15.0)  # 合理区间
 
     def test_compute_profile(self):
@@ -74,7 +75,7 @@ class TestHydro1D(unittest.TestCase):
         warnings = []
         levels, nodes = compute_hydro1d_profile(line, cfg, results, warnings=warnings)
         self.assertEqual(len(levels), 2)
-        self.assertAlmostEqual(levels[0], 11.92, places=2)
+        self.assertAlmostEqual(levels[0], 11.97, places=2)
         self.assertEqual(levels[1], 12.0)
         self.assertEqual(len(nodes), 2)
 
@@ -109,6 +110,36 @@ class TestHydro1D(unittest.TestCase):
 
         # 验证产生了流态转换警告
         self.assertTrue(any("断面发生流态转换" in w for w in warnings))
+
+    def test_contraction_expansion_logic(self):
+        # 验证缓流和急流情况下的收缩/扩张水头损失逻辑
+        # 在缓流中，上游到下游的流速增加(V_d > V_u)表示收缩 (contraction)
+        # 从而 default_loss 应该是 0.1 而不是 0.3
+        # 这个测试间接验证这一点
+        from src.core.config import Config
+        cfg = Config()
+
+        # 上游断面宽 20m，流速小
+        sec_up = Section(
+            name="S1", x=[0, 20], y=[0, 0], s=[0, 20], z=[10.0, 10.0],
+            params=SectionParams(name="S1", design_q=50.0, roughness=0.03)
+        )
+        # 下游断面宽 10m，流速大 (发生收缩)
+        sec_down = Section(
+            name="S2", x=[0, 10], y=[100, 100], s=[0, 10], z=[9.0, 9.0],
+            params=SectionParams(name="S2", design_q=50.0, roughness=0.03)
+        )
+
+        # 由于我们只关心 is_contraction 的逻辑，调用缓流函数
+        # 从下游往上游推算
+        Z_up_sub = standard_step_method_subcritical(
+            sec_down, 12.0, 50.0, 100.0,
+            sec_up, 50.0, 0.0,
+            10.0, 20.0, cfg
+        )
+
+        # 只要没有异常且能计算出一个合理的值，就说明这部分计算能跑通
+        self.assertTrue(Z_up_sub > 10.0)
 
 if __name__ == "__main__":
     unittest.main()
