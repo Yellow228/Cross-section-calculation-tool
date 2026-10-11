@@ -541,12 +541,12 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
     calc_and_record_nodes()
 
     if warnings is not None:
-        warnings.extend(_hydro1d_warnings(line, _diags))
+        warnings.extend(_hydro1d_warnings(line, _diags, res_nodes))
     return res_levels, res_nodes
 
 
-def _hydro1d_warnings(line: ProfileLine, diags: list[tuple[str, dict]]
-                      ) -> list[str]:
+def _hydro1d_warnings(line: ProfileLine, diags: list[tuple[str, dict]],
+                      res_nodes: list[Optional['HydroNode']]) -> list[str]:
     """把二分求根的诊断汇总成用户能照做的告警。
 
     只报**真出了事**的断面：要么解贴边（真解可能在区间外，水位不可信），
@@ -583,4 +583,45 @@ def _hydro1d_warnings(line: ProfileLine, diags: list[tuple[str, dict]]
         out.append(
             f"一维推算：{names}{more} 断面未收敛（能量方程残差最大 {worst:.4g} m），"
             f"水位结果仅供参考。常见原因是断面间距过大或几何突变。")
+
+    # Section Spacing Warnings
+    spacing_issues = []
+    n = len(res_nodes)
+    if n > 1:
+        dists = line.chainage if line.chainage else [sec.s[0] for sec in line.sections]
+        for i in range(n - 1):
+            n1 = res_nodes[i]
+            n2 = res_nodes[i+1]
+            if not n1 or not n2:
+                continue
+
+            L = abs(dists[i+1] - dists[i])
+            if L <= 1e-6:
+                continue
+
+            # 1. 动能头变化
+            vhead1 = n1.alpha * (n1.V ** 2) / (2 * 9.81)
+            vhead2 = n2.alpha * (n2.V ** 2) / (2 * 9.81)
+            if abs(vhead1 - vhead2) > 0.15:
+                spacing_issues.append((line.sections[i].name, line.sections[i+1].name, "动能头变化超限"))
+                continue
+
+            # 2. Samuels 经验公式检查
+            z_min1 = min(n1.sec.z)
+            z_min2 = min(n2.sec.z)
+            S0 = abs(z_min1 - z_min2) / L
+            # To avoid raising false warnings on flat beds
+            if S0 > 1e-6:
+                D_avg = ((n1.Z - z_min1) + (n2.Z - z_min2)) / 2.0
+                max_L = 0.15 * D_avg / S0
+                if L > max_L and max_L > 0:
+                    spacing_issues.append((line.sections[i].name, line.sections[i+1].name, "间距超出 Samuels 经验上限"))
+
+    if spacing_issues:
+        names = "、".join(f"{u}-{d}" for u, d, _ in spacing_issues[:3])
+        more = f" 等 {len(spacing_issues)} 个区间" if len(spacing_issues) > 3 else ""
+        out.append(
+            f"一维推算：断面间距可能过大 ({names}{more})，"
+            f"动能头变化剧烈或不满足 Samuels 经验公式，建议加密或插值断面。")
+
     return out

@@ -3088,12 +3088,21 @@ class TestBisectDiagnostics(unittest.TestCase):
             return Section(name=name, x=[0.0, 10.0, 20.0], y=[0.0, 10.0, 20.0],
                            s=s, z=z, params=p)
 
+        def mk(name, zmin):
+            s = [0.0, 10.0, 20.0]
+            z = [100.0, zmin, 100.2]
+            p = SectionParams(name=name, slope=0.005, roughness=0.03,
+                              design_q=5.0)
+            return Section(name=name, x=[0.0, 10.0, 20.0], y=[0.0, 10.0, 20.0],
+                           s=s, z=z, params=p)
+
+        # We need a proper bed slope to satisfy Samuels, and short L to prevent velocity change.
         down = mk("DOWN", 99.0)
-        up = mk("UP", 99.0)
+        up = mk("UP", 99.05)
         res_down = SectionResult(design_level=100.0)
 
         line = ProfileLine(name="L", sections=[down, up],
-                           chainage=[0.0, 100.0])
+                           chainage=[0.0, 10.0])
         warnings: list[str] = []
         compute_hydro1d_profile(line, cfg,
                                 results={"DOWN": res_down}, warnings=warnings)
