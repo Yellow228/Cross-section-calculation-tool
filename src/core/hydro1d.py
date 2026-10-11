@@ -268,7 +268,7 @@ def standard_step_method_subcritical(
         Sf_avg = (Q_avg / K_avg) ** 2 if K_avg > 1e-6 else 0.0
         hf = Sf_avg * L
         # 局部水头损失 (收缩/扩张)
-        is_contraction = node_u.V > node_d.V
+        is_contraction = node_d.V > node_u.V
         default_loss = 0.1 if is_contraction else 0.3
 
         # 优先使用断面的手动局部水头损失系数
