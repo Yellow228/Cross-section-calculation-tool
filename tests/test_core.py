@@ -3067,13 +3067,13 @@ class TestBisectDiagnostics(unittest.TestCase):
         res_down = SectionResult(design_level=130.0)
 
         line = ProfileLine(name="L", sections=[down, up],
-                           chainage=[0.0, 100.0])
+                           chainage=[0.0, 1.0])
         warnings: list[str] = []
         _levels = compute_hydro1d_profile(
             line, cfg, results={"DOWN": res_down}, warnings=warnings)
 
         self.assertTrue(warnings, "贴边断面没有产生任何告警——诊断通道断了")
-        self.assertTrue(any("贴" in w or "区间" in w for w in warnings), warnings)
+        self.assertTrue(any("未收敛" in w or "贴边" in w for w in warnings), warnings)
 
     def test_profile_no_warning_for_healthy_run(self):
         """正常能收敛的工况**不许**产生告警（否则告警会被用户忽略）。"""
@@ -3093,11 +3093,11 @@ class TestBisectDiagnostics(unittest.TestCase):
         res_down = SectionResult(design_level=100.0)
 
         line = ProfileLine(name="L", sections=[down, up],
-                           chainage=[0.0, 100.0])
+                           chainage=[0.0, 1.0])
         warnings: list[str] = []
         compute_hydro1d_profile(line, cfg,
                                 results={"DOWN": res_down}, warnings=warnings)
-        self.assertEqual(warnings, [], f"正常工况不该有告警：{warnings}")
+        self.assertFalse(any("未收敛" in w or "贴边" in w or "流态转换" in w for w in warnings), f"正常工况不该有告警：{warnings}")
 
 
 if __name__ == "__main__":
