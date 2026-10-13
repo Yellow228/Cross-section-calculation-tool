@@ -255,11 +255,8 @@ def _secant_detail(low: float, high: float, f, tol: float,
 
     if not converged:
         exhausted = True
-        if not math.isnan(z_crit):
-            x_new = z_crit
-            fallback_used = True
-        else:
-            x_new = float('nan')
+        # 不收敛时直接返回 NaN，不回退临界水深，避免伪造平滑解
+        x_new = float('nan')
 
     if math.isnan(x_new) or math.isinf(x_new):
         exhausted = True
@@ -558,6 +555,12 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                 up = res_nodes[i+1]
                 if dn and up:
                     dn.hl = up.H - dn.H
+                    if dn.hl < -1e-4:
+                        # 能量反号，通常发生在混合流流态转换处处理不当。标为 NaN
+                        dn.hl = float('nan')
+                        res_levels[i] = float('nan') # downstream node invalid
+                        # res_nodes[i] is already 'dn', but modifying res_levels will signal invalidity
+                        spacing_issues.append((dn.sec.name, up.sec.name + " (能量反号)"))
                     dh_kin = abs(up.alpha * (up.V**2) / (2 * 9.81) - dn.alpha * (dn.V**2) / (2 * 9.81))
                     dist = abs(up.dist - dn.dist)
                     D = (up.A / up.B + dn.A / dn.B) / 2.0 if up.B > 0 and dn.B > 0 else 1.0
@@ -571,6 +574,12 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                 up = res_nodes[i-1]
                 if dn and up:
                     dn.hl = up.H - dn.H
+                    if dn.hl < -1e-4:
+                        # 能量反号，通常发生在混合流流态转换处处理不当。标为 NaN
+                        dn.hl = float('nan')
+                        res_levels[i] = float('nan') # downstream node invalid
+                        # res_nodes[i] is already 'dn', but modifying res_levels will signal invalidity
+                        spacing_issues.append((dn.sec.name, up.sec.name + " (能量反号)"))
                     dh_kin = abs(up.alpha * (up.V**2) / (2 * 9.81) - dn.alpha * (dn.V**2) / (2 * 9.81))
                     dist = abs(up.dist - dn.dist)
                     D = (up.A / up.B + dn.A / dn.B) / 2.0 if up.B > 0 and dn.B > 0 else 1.0
@@ -610,7 +619,10 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                     sec_up, Qs[i], dists[i], z_min_up, z_max_up, cfg,
                     info_down=infos[i-1], info_up=infos[i], diag=d, Z_crit=Z_crit
                 )
-                if Z_up < Z_crit or d.get("fallback_to_critical"):
+                if math.isnan(Z_up):
+                    d["crossed_critical"] = True
+                    Z_up = Z_crit
+                elif Z_up < Z_crit or d.get("fallback_to_critical"):
                     d["crossed_critical"] = True
                     Z_up = Z_crit
                 _note(i, d)
@@ -627,7 +639,10 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                     sec_up, Qs[i], dists[i], z_min_up, z_max_up, cfg,
                     info_down=infos[i+1], info_up=infos[i], diag=d, Z_crit=Z_crit
                 )
-                if Z_up < Z_crit or d.get("fallback_to_critical"):
+                if math.isnan(Z_up):
+                    d["crossed_critical"] = True
+                    Z_up = Z_crit
+                elif Z_up < Z_crit or d.get("fallback_to_critical"):
                     d["crossed_critical"] = True
                     Z_up = Z_crit
                 _note(i, d)
@@ -654,7 +669,10 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                     sec_down, Qs[i], dists[i], z_min_down, z_max_down, cfg,
                     info_up=infos[i+1], info_down=infos[i], diag=d, Z_crit=Z_crit
                 )
-                if Z_down > Z_crit or d.get("fallback_to_critical"):
+                if math.isnan(Z_down):
+                    d["crossed_critical"] = True
+                    Z_down = Z_crit
+                elif Z_down > Z_crit or d.get("fallback_to_critical"):
                     d["crossed_critical"] = True
                     Z_down = Z_crit
                 _note(i, d)
@@ -671,7 +689,10 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                     sec_down, Qs[i], dists[i], z_min_down, z_max_down, cfg,
                     info_up=infos[i-1], info_down=infos[i], diag=d, Z_crit=Z_crit
                 )
-                if Z_down > Z_crit or d.get("fallback_to_critical"):
+                if math.isnan(Z_down):
+                    d["crossed_critical"] = True
+                    Z_down = Z_crit
+                elif Z_down > Z_crit or d.get("fallback_to_critical"):
                     d["crossed_critical"] = True
                     Z_down = Z_crit
                 _note(i, d)
@@ -737,7 +758,10 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                         sec_down, Qs[i], dists[i], z_min_down, z_max_down, cfg,
                         info_up=infos[i+1], info_down=infos[i], diag=d, Z_crit=Z_crit
                     )
-                    if Z_down > Z_crit or d.get("fallback_to_critical"):
+                    if math.isnan(Z_down):
+                        d["crossed_critical"] = True
+                        Z_down = Z_crit
+                    elif Z_down > Z_crit or d.get("fallback_to_critical"):
                         d["crossed_critical"] = True
                         Z_down = Z_crit
                     _note(i, d)
@@ -772,7 +796,10 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                         sec_down, Qs[i], dists[i], z_min_down, z_max_down, cfg,
                         info_up=infos[i-1], info_down=infos[i], diag=d, Z_crit=Z_crit
                     )
-                    if Z_down > Z_crit or d.get("fallback_to_critical"):
+                    if math.isnan(Z_down):
+                        d["crossed_critical"] = True
+                        Z_down = Z_crit
+                    elif Z_down > Z_crit or d.get("fallback_to_critical"):
                         d["crossed_critical"] = True
                         Z_down = Z_crit
                     _note(i, d)
@@ -894,7 +921,21 @@ def _hydro1d_warnings(line: ProfileLine, diags: list[tuple[str, dict]], spacing_
     if spacing_issues:
         pairs = "、".join(f"{d}-{u}" for d, u in spacing_issues[:3])
         more = f" 等 {len(spacing_issues)} 个" if len(spacing_issues) > 3 else ""
-        out.append(
-            f"一维推算：{pairs}{more} 断面间距可能过大（动能头变化 > 0.15m 或超出 Samuels 经验公式上限），"
-            f"建议在这两断面之间加密/插值以提高推算精度。")
+        # 分离普通的间距告警和能量反号告警
+        normal_issues = [f"{d}-{u}" for d, u in spacing_issues if "能量反号" not in u]
+        energy_issues = [f"{d}-{u.replace(' (能量反号)', '')}" for d, u in spacing_issues if "能量反号" in u]
+
+        if normal_issues:
+            pairs = "、".join(normal_issues[:3])
+            more = f" 等 {len(normal_issues)} 个" if len(normal_issues) > 3 else ""
+            out.append(
+                f"一维推算：{pairs}{more} 断面间距可能过大（动能头变化 > 0.15m 或超出 Samuels 经验公式上限），"
+                f"建议在这两断面之间加密/插值以提高推算精度。")
+
+        if energy_issues:
+            pairs = "、".join(energy_issues[:3])
+            more = f" 等 {len(energy_issues)} 个" if len(energy_issues) > 3 else ""
+            out.append(
+                f"一维推算：{pairs}{more} 相邻断面计算后出现能量反号（水头损失 < 0）。"
+                f"这通常发生在混合流流态转换处理不连续处。相关断面结果已被标记为无效。")
     return out
