@@ -14,6 +14,7 @@ from typing import Optional
 from .model import ProfileLine, Section
 from .geom import section_geom
 from .terrain import analyze_terrain
+from .slope import estimate_line_slope
 
 @dataclass
 class HydroNode:
@@ -178,6 +179,103 @@ def compute_critical_depth(sec: Section, Q: float, z_min: float, z_max: float) -
     return (low + high) / 2
 
 
+def _secant_detail(low: float, high: float, f, tol: float,
+                   z_crit: float = float('nan')) -> tuple[float, dict]:
+    """割线法求根，最大迭代20次。返回 (解, 诊断)。
+
+    不收敛处理：设置最大迭代次数（20 次）。当超出迭代次数不收敛时，
+    回退为临界水深（Critical Depth）尝试继续推进；若全局发散则明确标记计算失败。
+    """
+    # 因为能量方程 f(z) = H_up - (H_down + hf + he) 可能非常非线性，在低水位容易跑偏。
+    # 用几步二分法作为种子，找一个好的区间进行割线法，或者混合使用。
+    # 结合了 Brent's method 思想的简化版。
+    a = low
+    b = high
+    fa = f(a)
+    fb = f(b)
+
+    # 二分预处理，尝试收缩边界，使得符号相反
+    for _ in range(10):
+        if math.isnan(fa) or math.isnan(fb):
+            break
+        if fa * fb < 0:
+            break
+        mid = (a + b) / 2
+        fmid = f(mid)
+        if abs(fmid) < tol:
+            return mid, {"converged": True, "residual": fmid, "exhausted": False, "clipped": False, "fallback_to_critical": False, "bracket": (low, high), "z_bounds": (low, high)}
+
+        # 尝试猜测方向（一般情况随着z增大，H变大，f(z)也变大）
+        if fmid > 0:
+            b = mid
+            fb = fmid
+        else:
+            a = mid
+            fa = fmid
+
+    x0 = a
+    x1 = b
+    f0 = fa
+    f1 = fb
+
+    exhausted = False
+    converged = False
+    max_iter = 20
+    x_new = x1
+
+    for _ in range(max_iter):
+        if math.isnan(f1) or math.isinf(f1):
+            break
+
+        if abs(f1) < tol:
+            converged = True
+            break
+
+        diff = f1 - f0
+        if abs(diff) < 1e-12:
+            exhausted = True
+            break
+
+        x_new = x1 - f1 * (x1 - x0) / diff
+
+        # 如果新解跑出去了 [a, b] 这个有根区间，退化成二分
+        if x_new < min(x0, x1) - 1.0 or x_new > max(x0, x1) + 1.0:
+             x_new = (x0 + x1) / 2.0
+
+        x0, f0 = x1, f1
+        x1 = x_new
+        try:
+            f1 = f(x1)
+        except:
+            f1 = float('inf')
+
+    converged = abs(f1) < tol
+    clipped = False
+    fallback_used = False
+
+    if not converged:
+        exhausted = True
+        # 不收敛时直接返回 NaN，不回退临界水深，避免伪造平滑解
+        x_new = float('nan')
+
+    if math.isnan(x_new) or math.isinf(x_new):
+        exhausted = True
+        x_new = float('nan')
+
+    diag = {
+        "converged": converged,
+        "residual": f1 if not math.isnan(x_new) else float('inf'),
+        "exhausted": exhausted,
+        "at_lower": False, # Retained for compatibility
+        "at_upper": False, # Retained for compatibility
+        "clipped": clipped,
+        "fallback_to_critical": fallback_used,
+        "bracket": (low, high),
+        "z_bounds": (low, high),
+    }
+    return x_new, diag
+
+
 def _bisect_detail(low: float, high: float, f, tol: float,
                    rising: bool) -> tuple[float, dict]:
     """二分求根，返回 (解, 诊断)。
@@ -252,6 +350,7 @@ def standard_step_method_subcritical(
     info_down=None,
     info_up=None,
     diag: Optional[dict] = None,
+    Z_crit: float = float('nan'),
 ) -> float:
     """
     缓流：从下游推上游 (标准步长法)
@@ -282,7 +381,7 @@ def standard_step_method_subcritical(
     # 使用割线法求根 (Bisection 在此处可能符号变化不明确，因单调性复杂)
     # 对于缓流，H_up 随 Z_up 严格单调增加
     # diff = H_up - (H_down + hf + he) 随 Z_up 递增 -> rising=True
-    x, d = _bisect_detail(z_min, z_max, energy_diff, 1e-4, rising=True)
+    x, d = _secant_detail(z_min, z_max, energy_diff, 1e-4, z_crit=Z_crit)
     if diag is not None:
         diag.update(d)
     return x
@@ -302,6 +401,7 @@ def standard_step_method_supercritical(
     info_up=None,
     info_down=None,
     diag: Optional[dict] = None,
+    Z_crit: float = float('nan'),
 ) -> float:
     """
     急流：从上游推下游 (标准步长法)
@@ -330,7 +430,7 @@ def standard_step_method_supercritical(
 
     # 原逻辑：diff > 0 -> high = mid，与缓流同一个走向（rising=True）。
     # 这里**逐字保持原行为**，只把它换成带诊断的实现，不改数值。
-    x, d = _bisect_detail(z_min, z_max, energy_diff, 1e-4, rising=True)
+    x, d = _secant_detail(z_min, z_max, energy_diff, 1e-4, z_crit=Z_crit)
     if diag is not None:
         diag.update(d)
     return x
@@ -349,6 +449,32 @@ def downstream_index(sections: list[Section], infos: list) -> int:
             min_z = z
             idx = i
     return idx
+
+
+
+def compute_normal_depth(sec: Section, Q: float, S0: float, z_min: float, z_max: float, cfg, info=None) -> float:
+    """使用曼宁公式 Q = K * sqrt(S0) 反算正常水深。"""
+    if S0 <= 0:
+        return float('nan')
+
+    target_K = Q / math.sqrt(S0)
+
+    def f(z: float) -> float:
+        node = get_node_state(sec, z, Q, 0.0, cfg, info)
+        return node.K - target_K
+
+    # K 随 z 递增，所以可以使用二分法或者割线法。这里直接用简单的二分。
+    low, high = z_min, z_max
+    for _ in range(50):
+        mid = (low + high) / 2
+        f_mid = f(mid)
+        if abs(f_mid) < 1e-3 or (high - low) < 1e-3:
+            return mid
+        if f_mid > 0:
+            high = mid
+        else:
+            low = mid
+    return (low + high) / 2
 
 
 def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
@@ -385,16 +511,15 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
         infos.append(analyze_terrain(sec, cfg))
         dist = line.chainage[i] if line.chainage else sec.s[0]
         dists.append(dist)
-        # 获取现有的设计水位作为起推水位
-        res_data = results.get(sec.name)
-        if res_data and not math.isnan(res_data.design_level):
-            z_init = res_data.design_level
-        else:
-            z_init = max(sec.z)
-        Z_initials.append(z_init)
 
     ds_idx = downstream_index(sections, infos)
     us_idx = 0 if ds_idx == n - 1 else n - 1
+
+    # 计算全线平均比降，用于正常水深起推
+    slope_est = estimate_line_slope(line.profile, line_name=line.name)
+    S0 = slope_est.slope("jc") if slope_est.ok else float('nan')
+    if not math.isfinite(S0) or S0 <= 0:
+        S0 = 0.001 # Fallback dummy slope if totally invalid
 
     # 提取整个河段固定使用的流量 (取最上游断面)
     q_val = sections[us_idx].params.design_q
@@ -403,149 +528,348 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
 
     Qs = [q_val] * n
 
+    for i, sec in enumerate(sections):
+        res_data = results.get(sec.name)
+        if res_data and not math.isnan(res_data.design_level):
+            z_init = res_data.design_level
+        else:
+            # 边界断面如果是起推断面，使用正常水深 (Normal Depth)
+            # 我们不知道当前断面是不是起推断面，所以只要没填就尝试使用正常水深兜底，而不是 max(sec.z)
+            z_init = compute_normal_depth(sec, Qs[i], S0, min(sec.z) + 0.01, max(sec.z) + 10.0, cfg, infos[i])
+            if math.isnan(z_init):
+                z_init = max(sec.z)
+        Z_initials.append(z_init)
+
     regime = line.hydro1d_regime
 
-    # 目前“混合流/自动”默认退化为缓流推算，因为纯混合流水面线推算需要复杂的水跃控制逻辑
-    if regime in ("mixed", "auto"):
-        regime = "subcritical"
-
-    # 判断方向是否需要倒序遍历 (即索引 0 是下游还是 n-1 是下游)
-    # 每次二分求根的诊断都攒在这里，最后统一汇总成一句可读的告警。
     _diags: list[tuple[str, dict]] = []
 
     def _note(i: int, d: dict) -> None:
         _diags.append((sections[i].name, d))
 
-    def calc_and_record_nodes():
-        for i in range(n):
-            if math.isnan(res_levels[i]):
-                continue
-            z_min_sec = min(sections[i].z) + 0.01
-            z_max_sec = max(sections[i].z) + 10.0
-            node = get_node_state(sections[i], res_levels[i], Qs[i], dists[i], cfg, infos[i])
-            node.Z_crit = compute_critical_depth(sections[i], Qs[i], z_min_sec, z_max_sec)
-            res_nodes[i] = node
-
-        # 根据流向计算水头损失
-        # 水头损失(hl)计算：hl = H_upstream - H_downstream
+    def calc_hl_and_warnings():
+        spacing_issues = []
         if ds_idx == 0:
-            # 索引 0 是下游, 索引 n-1 是上游
-            for i in range(n - 1): # i 从 0 到 n-2 (不包括最上游 n-1)
-                # 计算当前节点 i 的水头损失，需要其相邻上游节点 i+1
-                curr_node = res_nodes[i]
-                up_node = res_nodes[i+1]
-                if curr_node and up_node:
-                    curr_node.hl = up_node.H - curr_node.H
+            for i in range(n - 1):
+                dn = res_nodes[i]
+                up = res_nodes[i+1]
+                if dn and up:
+                    dn.hl = up.H - dn.H
+                    if dn.hl < -1e-4:
+                        # 能量反号，通常发生在混合流流态转换处处理不当。标为 NaN
+                        dn.hl = float('nan')
+                        spacing_issues.append((dn.sec.name, up.sec.name + " (能量反号)"))
+                    dh_kin = abs(up.alpha * (up.V**2) / (2 * 9.81) - dn.alpha * (dn.V**2) / (2 * 9.81))
+                    dist = abs(up.dist - dn.dist)
+                    D = (up.A / up.B + dn.A / dn.B) / 2.0 if up.B > 0 and dn.B > 0 else 1.0
+                    local_S0 = abs(min(up.sec.z) - min(dn.sec.z)) / dist if dist > 0 else 0.0
+                    max_spacing = 0.15 * D / local_S0 if local_S0 > 1e-6 else float('inf')
+                    if dh_kin > 0.15 or (dist > 0 and dist > max_spacing):
+                        spacing_issues.append((dn.sec.name, up.sec.name))
         else:
-            # 索引 n-1 是下游, 索引 0 是上游
-            for i in range(1, n): # i 从 1 到 n-1 (不包括最上游 0)
-                # 计算当前节点 i 的水头损失，需要其相邻上游节点 i-1
-                curr_node = res_nodes[i]
-                up_node = res_nodes[i-1]
-                if curr_node and up_node:
-                    curr_node.hl = up_node.H - curr_node.H
-
-    if ds_idx == 0:
-        # 索引 0 是下游
-        if regime == "subcritical":
-            # 缓流：从下游推上游 (0 -> n-1)
-            res_levels[0] = Z_initials[0]
             for i in range(1, n):
-                sec_up = sections[i]
-                sec_down = sections[i-1]
-                z_min_up = min(sec_up.z) + 0.01
-                z_max_up = max(sec_up.z) + 10.0
+                dn = res_nodes[i]
+                up = res_nodes[i-1]
+                if dn and up:
+                    dn.hl = up.H - dn.H
+                    if dn.hl < -1e-4:
+                        # 能量反号，通常发生在混合流流态转换处处理不当。标为 NaN
+                        dn.hl = float('nan')
+                        spacing_issues.append((dn.sec.name, up.sec.name + " (能量反号)"))
+                    dh_kin = abs(up.alpha * (up.V**2) / (2 * 9.81) - dn.alpha * (dn.V**2) / (2 * 9.81))
+                    dist = abs(up.dist - dn.dist)
+                    D = (up.A / up.B + dn.A / dn.B) / 2.0 if up.B > 0 and dn.B > 0 else 1.0
+                    local_S0 = abs(min(up.sec.z) - min(dn.sec.z)) / dist if dist > 0 else 0.0
+                    max_spacing = 0.15 * D / local_S0 if local_S0 > 1e-6 else float('inf')
+                    if dh_kin > 0.15 or (dist > 0 and dist > max_spacing):
+                        spacing_issues.append((dn.sec.name, up.sec.name))
+        return spacing_issues
 
+
+    if regime in ("mixed", "auto"):
+        # 混合流推算 (Two-Pass Algorithm)
+        res_levels_sub = [float('nan')] * n
+        res_nodes_sub = [None] * n
+
+        # 第一遍：缓流 (从下游推上游)
+        if ds_idx == 0:
+            res_levels_sub[0] = Z_initials[0]
+            for i in range(1, n):
+                sec_up, sec_down = sections[i], sections[i-1]
+                z_min_up, z_max_up = min(sec_up.z) + 0.01, max(sec_up.z) + 10.0
                 d: dict = {}
-                Z_up = standard_step_method_subcritical(
-                    sec_down, res_levels[i-1], Qs[i-1], dists[i-1],
-                    sec_up, Qs[i], dists[i],
-                    z_min_up, z_max_up, cfg,
-                    info_down=infos[i-1], info_up=infos[i], diag=d
-                )
                 Z_crit = compute_critical_depth(sec_up, Qs[i], z_min_up, z_max_up)
-                if Z_up < Z_crit:
+                Z_up = standard_step_method_subcritical(
+                    sec_down, res_levels_sub[i-1], Qs[i-1], dists[i-1],
+                    sec_up, Qs[i], dists[i], z_min_up, z_max_up, cfg,
+                    info_down=infos[i-1], info_up=infos[i], diag=d, Z_crit=Z_crit
+                )
+                if math.isnan(Z_up):
+                    d["crossed_critical"] = True
+                    Z_up = float('nan')
+                elif Z_up < Z_crit or d.get("fallback_to_critical"):
                     d["crossed_critical"] = True
                     Z_up = Z_crit
                 _note(i, d)
-                res_levels[i] = Z_up
+                res_levels_sub[i] = Z_up
         else:
-            # 急流：从上游推下游 (n-1 -> 0)
-            res_levels[-1] = Z_initials[-1]
+            res_levels_sub[-1] = Z_initials[-1]
             for i in range(n - 2, -1, -1):
-                sec_up = sections[i+1]
-                sec_down = sections[i]
-                z_min_down = min(sec_down.z) + 0.01
-                z_max_down = max(sec_down.z) + 10.0
-
+                sec_up, sec_down = sections[i], sections[i+1]
+                z_min_up, z_max_up = min(sec_up.z) + 0.01, max(sec_up.z) + 10.0
                 d = {}
-                Z_down = standard_step_method_supercritical(
-                    sec_up, res_levels[i+1], Qs[i+1], dists[i+1],
-                    sec_down, Qs[i], dists[i],
-                    z_min_down, z_max_down, cfg,
-                    info_up=infos[i+1], info_down=infos[i], diag=d
+                Z_crit = compute_critical_depth(sec_up, Qs[i], z_min_up, z_max_up)
+                Z_up = standard_step_method_subcritical(
+                    sec_down, res_levels_sub[i+1], Qs[i+1], dists[i+1],
+                    sec_up, Qs[i], dists[i], z_min_up, z_max_up, cfg,
+                    info_down=infos[i+1], info_up=infos[i], diag=d, Z_crit=Z_crit
                 )
+                if math.isnan(Z_up):
+                    d["crossed_critical"] = True
+                    Z_up = float('nan')
+                elif Z_up < Z_crit or d.get("fallback_to_critical"):
+                    d["crossed_critical"] = True
+                    Z_up = Z_crit
+                _note(i, d)
+                res_levels_sub[i] = Z_up
+
+        for i in range(n):
+            if not math.isnan(res_levels_sub[i]):
+                node = get_node_state(sections[i], res_levels_sub[i], Qs[i], dists[i], cfg, infos[i])
+                node.Z_crit = compute_critical_depth(sections[i], Qs[i], min(sections[i].z)+0.01, max(sections[i].z)+10.0)
+                res_nodes_sub[i] = node
+
+        # 第二遍：急流 (从上游推下游)
+        res_levels_sup = [float('nan')] * n
+        res_nodes_sup = [None] * n
+        if ds_idx == 0:
+            res_levels_sup[-1] = Z_initials[-1]
+            for i in range(n - 2, -1, -1):
+                sec_up, sec_down = sections[i+1], sections[i]
+                z_min_down, z_max_down = min(sec_down.z) + 0.01, max(sec_down.z) + 10.0
+                d = {}
                 Z_crit = compute_critical_depth(sec_down, Qs[i], z_min_down, z_max_down)
-                if Z_down > Z_crit:
+                Z_down = standard_step_method_supercritical(
+                    sec_up, res_levels_sup[i+1], Qs[i+1], dists[i+1],
+                    sec_down, Qs[i], dists[i], z_min_down, z_max_down, cfg,
+                    info_up=infos[i+1], info_down=infos[i], diag=d, Z_crit=Z_crit
+                )
+                if math.isnan(Z_down):
+                    d["crossed_critical"] = True
+                    Z_down = float('nan')
+                elif Z_down > Z_crit or d.get("fallback_to_critical"):
                     d["crossed_critical"] = True
                     Z_down = Z_crit
                 _note(i, d)
-                res_levels[i] = Z_down
-    else:
-        # 索引 n-1 是下游
-        if regime == "subcritical":
-            # 缓流：从下游推上游 (n-1 -> 0)
-            res_levels[-1] = Z_initials[-1]
-            for i in range(n - 2, -1, -1):
-                sec_up = sections[i]
-                sec_down = sections[i+1]
-                z_min_up = min(sec_up.z) + 0.01
-                z_max_up = max(sec_up.z) + 10.0
-
-                d = {}
-                Z_up = standard_step_method_subcritical(
-                    sec_down, res_levels[i+1], Qs[i+1], dists[i+1],
-                    sec_up, Qs[i], dists[i],
-                    z_min_up, z_max_up, cfg,
-                    info_down=infos[i+1], info_up=infos[i], diag=d
-                )
-                Z_crit = compute_critical_depth(sec_up, Qs[i], z_min_up, z_max_up)
-                if Z_up < Z_crit:
-                    d["crossed_critical"] = True
-                    Z_up = Z_crit
-                _note(i, d)
-                res_levels[i] = Z_up
+                res_levels_sup[i] = Z_down
         else:
-            # 急流：从上游推下游 (0 -> n-1)
-            res_levels[0] = Z_initials[0]
+            res_levels_sup[0] = Z_initials[0]
             for i in range(1, n):
-                sec_up = sections[i-1]
-                sec_down = sections[i]
-                z_min_down = min(sec_down.z) + 0.01
-                z_max_down = max(sec_down.z) + 10.0
-
+                sec_up, sec_down = sections[i-1], sections[i]
+                z_min_down, z_max_down = min(sec_down.z) + 0.01, max(sec_down.z) + 10.0
                 d = {}
-                Z_down = standard_step_method_supercritical(
-                    sec_up, res_levels[i-1], Qs[i-1], dists[i-1],
-                    sec_down, Qs[i], dists[i],
-                    z_min_down, z_max_down, cfg,
-                    info_up=infos[i-1], info_down=infos[i], diag=d
-                )
                 Z_crit = compute_critical_depth(sec_down, Qs[i], z_min_down, z_max_down)
-                if Z_down > Z_crit:
+                Z_down = standard_step_method_supercritical(
+                    sec_up, res_levels_sup[i-1], Qs[i-1], dists[i-1],
+                    sec_down, Qs[i], dists[i], z_min_down, z_max_down, cfg,
+                    info_up=infos[i-1], info_down=infos[i], diag=d, Z_crit=Z_crit
+                )
+                if math.isnan(Z_down):
+                    d["crossed_critical"] = True
+                    Z_down = float('nan')
+                elif Z_down > Z_crit or d.get("fallback_to_critical"):
                     d["crossed_critical"] = True
                     Z_down = Z_crit
                 _note(i, d)
-                res_levels[i] = Z_down
+                res_levels_sup[i] = Z_down
 
-    calc_and_record_nodes()
+        for i in range(n):
+            if not math.isnan(res_levels_sup[i]):
+                node = get_node_state(sections[i], res_levels_sup[i], Qs[i], dists[i], cfg, infos[i])
+                node.Z_crit = res_nodes_sub[i].Z_crit if res_nodes_sub[i] else compute_critical_depth(sections[i], Qs[i], min(sections[i].z)+0.01, max(sections[i].z)+10.0)
+                res_nodes_sup[i] = node
 
+        # 根据比力 (Specific Force) 合并水面线
+        for i in range(n):
+            z_sub = res_levels_sub[i]
+            z_sup = res_levels_sup[i]
+            # 混合流两条水面线各自只在部分河段有解：
+            #   缓流 pass 自下游推，穿越临界后的上游断面无解(NaN)；
+            #   急流 pass 自上游推，下游断面无解(NaN)。
+            # 所以单侧 NaN 是正常的，取有解的那一侧；只有两侧都 NaN 才是真失败。
+            if math.isnan(z_sub) and math.isnan(z_sup):
+                res_levels[i] = float('nan')
+                res_nodes[i] = None
+            elif math.isnan(z_sub):
+                res_levels[i] = z_sup
+                res_nodes[i] = res_nodes_sup[i]
+            elif math.isnan(z_sup):
+                res_levels[i] = z_sub
+                res_nodes[i] = res_nodes_sub[i]
+            else:
+                M_sub = calculate_specific_force(sections[i], z_sub, Qs[i], res_nodes_sub[i].alpha, cfg)
+                M_sup = calculate_specific_force(sections[i], z_sup, Qs[i], res_nodes_sup[i].alpha, cfg)
+                # 水跃条件 M_sub >= M_sup
+                if M_sub >= M_sup:
+                    res_levels[i] = z_sub
+                    res_nodes[i] = res_nodes_sub[i]
+                else:
+                    res_levels[i] = z_sup
+                    res_nodes[i] = res_nodes_sup[i]
+
+        spacing_issues = calc_hl_and_warnings()
+    else:
+        # 单一流态推算 (缓流或急流)
+        if ds_idx == 0:
+            if regime == "subcritical":
+                res_levels[0] = Z_initials[0]
+                for i in range(1, n):
+                    sec_up, sec_down = sections[i], sections[i-1]
+                    z_min_up, z_max_up = min(sec_up.z) + 0.01, max(sec_up.z) + 10.0
+                    d: dict = {}
+                    Z_crit = compute_critical_depth(sec_up, Qs[i], z_min_up, z_max_up)
+                    Z_up = standard_step_method_subcritical(
+                        sec_down, res_levels[i-1], Qs[i-1], dists[i-1],
+                        sec_up, Qs[i], dists[i], z_min_up, z_max_up, cfg,
+                        info_down=infos[i-1], info_up=infos[i], diag=d, Z_crit=Z_crit
+                    )
+                    if math.isnan(Z_up):
+                        d["crossed_critical"] = True
+                        Z_up = float('nan')
+                    elif Z_up < Z_crit or d.get("fallback_to_critical"):
+                        d["crossed_critical"] = True
+                        Z_up = Z_crit
+                    _note(i, d)
+                    res_levels[i] = Z_up
+            else:
+                res_levels[-1] = Z_initials[-1]
+                for i in range(n - 2, -1, -1):
+                    sec_up, sec_down = sections[i+1], sections[i]
+                    z_min_down, z_max_down = min(sec_down.z) + 0.01, max(sec_down.z) + 10.0
+                    d = {}
+                    Z_crit = compute_critical_depth(sec_down, Qs[i], z_min_down, z_max_down)
+                    Z_down = standard_step_method_supercritical(
+                        sec_up, res_levels[i+1], Qs[i+1], dists[i+1],
+                        sec_down, Qs[i], dists[i], z_min_down, z_max_down, cfg,
+                        info_up=infos[i+1], info_down=infos[i], diag=d, Z_crit=Z_crit
+                    )
+                    if math.isnan(Z_down):
+                        d["crossed_critical"] = True
+                        Z_down = float('nan')
+                    elif Z_down > Z_crit or d.get("fallback_to_critical"):
+                        d["crossed_critical"] = True
+                        Z_down = Z_crit
+                    _note(i, d)
+                    res_levels[i] = Z_down
+        else:
+            if regime == "subcritical":
+                res_levels[-1] = Z_initials[-1]
+                for i in range(n - 2, -1, -1):
+                    sec_up, sec_down = sections[i], sections[i+1]
+                    z_min_up, z_max_up = min(sec_up.z) + 0.01, max(sec_up.z) + 10.0
+                    d = {}
+                    Z_crit = compute_critical_depth(sec_up, Qs[i], z_min_up, z_max_up)
+                    Z_up = standard_step_method_subcritical(
+                        sec_down, res_levels[i+1], Qs[i+1], dists[i+1],
+                        sec_up, Qs[i], dists[i], z_min_up, z_max_up, cfg,
+                        info_down=infos[i+1], info_up=infos[i], diag=d, Z_crit=Z_crit
+                    )
+                    if math.isnan(Z_up):
+                        d["crossed_critical"] = True
+                        Z_up = float('nan')
+                    elif Z_up < Z_crit or d.get("fallback_to_critical"):
+                        d["crossed_critical"] = True
+                        Z_up = Z_crit
+                    _note(i, d)
+                    res_levels[i] = Z_up
+            else:
+                res_levels[0] = Z_initials[0]
+                for i in range(1, n):
+                    sec_up, sec_down = sections[i-1], sections[i]
+                    z_min_down, z_max_down = min(sec_down.z) + 0.01, max(sec_down.z) + 10.0
+                    d = {}
+                    Z_crit = compute_critical_depth(sec_down, Qs[i], z_min_down, z_max_down)
+                    Z_down = standard_step_method_supercritical(
+                        sec_up, res_levels[i-1], Qs[i-1], dists[i-1],
+                        sec_down, Qs[i], dists[i], z_min_down, z_max_down, cfg,
+                        info_up=infos[i-1], info_down=infos[i], diag=d, Z_crit=Z_crit
+                    )
+                    if math.isnan(Z_down):
+                        d["crossed_critical"] = True
+                        Z_down = float('nan')
+                    elif Z_down > Z_crit or d.get("fallback_to_critical"):
+                        d["crossed_critical"] = True
+                        Z_down = Z_crit
+                    _note(i, d)
+                    res_levels[i] = Z_down
+
+        for i in range(n):
+            if not math.isnan(res_levels[i]):
+                node = get_node_state(sections[i], res_levels[i], Qs[i], dists[i], cfg, infos[i])
+                node.Z_crit = compute_critical_depth(sections[i], Qs[i], min(sections[i].z)+0.01, max(sections[i].z)+10.0)
+                res_nodes[i] = node
+        spacing_issues = calc_hl_and_warnings()
+
+
+    if 'spacing_issues' not in locals(): spacing_issues = []
     if warnings is not None:
-        warnings.extend(_hydro1d_warnings(line, _diags))
+        warnings.extend(_hydro1d_warnings(line, _diags, spacing_issues))
     return res_levels, res_nodes
 
 
-def _hydro1d_warnings(line: ProfileLine, diags: list[tuple[str, dict]]
+
+def calculate_specific_force(sec: Section, Z: float, Q: float, beta: float, cfg) -> float:
+    """计算断面的比力 M = A*y_bar + beta * Q^2 / (g*A)。"""
+    A, P, B = section_geom(sec.s, sec.z, Z)
+    if A <= 1e-6:
+        return float('inf')
+
+    # 计算 A*y_bar (First moment of area about water surface)
+    # y_bar = 面积中心到水面的深度
+    # 对于多边形积分：Sum ( (H - z_centroid_i) * A_i )
+    # 为简单和准确起见，迭代各个浸没梯形：
+    Ay_bar = 0.0
+    for i in range(len(sec.s) - 1):
+        x1, x2 = sec.s[i], sec.s[i + 1]
+        z1, z2 = sec.z[i], sec.z[i + 1]
+
+        if Z <= min(z1, z2):
+            continue
+
+        # 完全在水下
+        if Z >= max(z1, z2):
+            h1 = Z - z1
+            h2 = Z - z2
+            dx = abs(x2 - x1)
+            area_i = (h1 + h2) / 2.0 * dx
+            # 梯形的形心深度： y_c = (h1^2 + h1*h2 + h2^2) / (3 * (h1 + h2))
+            if h1 + h2 > 1e-6:
+                yc = (h1**2 + h1*h2 + h2**2) / (3.0 * (h1 + h2))
+            else:
+                yc = 0.0
+            Ay_bar += area_i * yc
+            continue
+
+        # 部分浸没
+        xi = x1 + (x2 - x1) * (Z - z1) / (z2 - z1)
+        if z1 < Z:
+            dx = abs(xi - x1)
+            h1 = Z - z1
+            area_i = h1 / 2.0 * dx
+            yc = h1 / 3.0
+            Ay_bar += area_i * yc
+        else:
+            dx = abs(x2 - xi)
+            h2 = Z - z2
+            area_i = h2 / 2.0 * dx
+            yc = h2 / 3.0
+            Ay_bar += area_i * yc
+
+    M = Ay_bar + beta * (Q**2) / (9.81 * A)
+    return M
+
+
+def _hydro1d_warnings(line: ProfileLine, diags: list[tuple[str, dict]], spacing_issues: list = None
                       ) -> list[str]:
     """把二分求根的诊断汇总成用户能照做的告警。
 
@@ -553,9 +877,18 @@ def _hydro1d_warnings(line: ProfileLine, diags: list[tuple[str, dict]]
     要么残差没收敛（迭代用尽仍不满足能量方程），要么越过了临界水深。
     两种情况原实现都静默返回一个数字，用户完全没有线索。
     """
-    clipped = [(nm, d) for nm, d in diags if d.get("clipped")]
-    unconv = [(nm, d) for nm, d in diags if not d.get("converged")]
-    crossed = [(nm, d) for nm, d in diags if d.get("crossed_critical")]
+    def _unique_names(items):
+        seen = set()
+        res = []
+        for nm, d in items:
+            if nm not in seen:
+                seen.add(nm)
+                res.append((nm, d))
+        return res
+
+    clipped = _unique_names([(nm, d) for nm, d in diags if d.get("clipped")])
+    unconv = _unique_names([(nm, d) for nm, d in diags if not d.get("converged")])
+    crossed = _unique_names([(nm, d) for nm, d in diags if d.get("crossed_critical")])
 
     out: list[str] = []
 
@@ -569,8 +902,7 @@ def _hydro1d_warnings(line: ProfileLine, diags: list[tuple[str, dict]]
         names = "、".join(nm for nm, _ in clipped[:5])
         more = f" 等 {len(clipped)} 个" if len(clipped) > 5 else ""
         lo, hi = clipped[0][1].get("z_bounds", (float("nan"), float("nan")))
-        where = "下界（最低测点附近）" if clipped[0][1].get("at_lower") \
-            else "上界（最高测点 +10 m）"
+        where = "下界（最低测点附近）" if clipped[0][1].get("at_lower")             else "上界（最高测点 +10 m）"
         out.append(
             f"一维推算：{names}{more} 断面的水位解贴在搜索区间{where}，"
             f"结果不可信——通常表示该断面的回水高度超出了 "
@@ -583,4 +915,25 @@ def _hydro1d_warnings(line: ProfileLine, diags: list[tuple[str, dict]]
         out.append(
             f"一维推算：{names}{more} 断面未收敛（能量方程残差最大 {worst:.4g} m），"
             f"水位结果仅供参考。常见原因是断面间距过大或几何突变。")
+
+    if spacing_issues:
+        pairs = "、".join(f"{d}-{u}" for d, u in spacing_issues[:3])
+        more = f" 等 {len(spacing_issues)} 个" if len(spacing_issues) > 3 else ""
+        # 分离普通的间距告警和能量反号告警
+        normal_issues = [f"{d}-{u}" for d, u in spacing_issues if "能量反号" not in u]
+        energy_issues = [f"{d}-{u.replace(' (能量反号)', '')}" for d, u in spacing_issues if "能量反号" in u]
+
+        if normal_issues:
+            pairs = "、".join(normal_issues[:3])
+            more = f" 等 {len(normal_issues)} 个" if len(normal_issues) > 3 else ""
+            out.append(
+                f"一维推算：{pairs}{more} 断面间距可能过大（动能头变化 > 0.15m 或超出 Samuels 经验公式上限），"
+                f"建议在这两断面之间加密/插值以提高推算精度。")
+
+        if energy_issues:
+            pairs = "、".join(energy_issues[:3])
+            more = f" 等 {len(energy_issues)} 个" if len(energy_issues) > 3 else ""
+            out.append(
+                f"一维推算：{pairs}{more} 相邻断面计算后出现能量反号（水头损失 < 0）。"
+                f"这通常发生在混合流流态转换处理不连续处。相关断面结果已被标记为无效。")
     return out

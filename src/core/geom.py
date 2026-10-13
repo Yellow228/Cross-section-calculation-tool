@@ -49,7 +49,7 @@ def section_geom(x: list[float], z: list[float], H: float) -> tuple[float, float
             continue
 
         # 部分浸没：插值交点
-        xi = x1 + (x2 - x1) * (H - z1) / (z2 - z1)
+        xi = x1 + (x2 - x1) * (H - z1) / (z2 - z1 if abs(z2 - z1) > 1e-9 else 1e-9)
 
         if z1 < H:              # 点 1 在水下，湿润段为 x1 -> xi
             dx = abs(xi - x1)
