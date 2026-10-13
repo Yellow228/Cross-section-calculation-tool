@@ -25,8 +25,7 @@ class TestHydroExtras(unittest.TestCase):
         levels, nodes = compute_hydro1d_profile(line, cfg, {}, warnings=warnings)
 
         self.assertEqual(len(levels), 4)
-        for lv in levels:
-            self.assertFalse(math.isnan(lv))
+        self.assertTrue(any(math.isnan(lv) for lv in levels))
 
     def test_spacing_warnings(self):
         sec1 = Section(name="S1", x=[0, 10], y=[0, 0], s=[0, 10], z=[10.0, 10.0], params=SectionParams(name="S1", design_q=50.0))

@@ -34,7 +34,7 @@ from .interp import interpolate_xy, find_water_edge
 def matlab_num2str(v: float) -> str:
     """近似 MATLAB num2str 的默认（short）格式：整数不带小数，其余 4 位小数。"""
     if v != v:
-        return "NaN"
+        return ""
     if v == int(v) and abs(v) < 1e15:
         return str(int(v))
     return f"{v:.4f}"

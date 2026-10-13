@@ -590,17 +590,6 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
         return spacing_issues
 
 
-    def calc_hl():
-        # 根据流向计算水头损失 hl = H_upstream - H_downstream
-        if ds_idx == 0:
-            for i in range(n - 1):
-                if res_nodes[i] and res_nodes[i+1]:
-                    res_nodes[i].hl = res_nodes[i+1].H - res_nodes[i].H
-        else:
-            for i in range(1, n):
-                if res_nodes[i] and res_nodes[i-1]:
-                    res_nodes[i].hl = res_nodes[i-1].H - res_nodes[i].H
-
     if regime in ("mixed", "auto"):
         # 混合流推算 (Two-Pass Algorithm)
         res_levels_sub = [float('nan')] * n
@@ -621,7 +610,7 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                 )
                 if math.isnan(Z_up):
                     d["crossed_critical"] = True
-                    Z_up = Z_crit
+                    Z_up = float('nan')
                 elif Z_up < Z_crit or d.get("fallback_to_critical"):
                     d["crossed_critical"] = True
                     Z_up = Z_crit
@@ -641,7 +630,7 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                 )
                 if math.isnan(Z_up):
                     d["crossed_critical"] = True
-                    Z_up = Z_crit
+                    Z_up = float('nan')
                 elif Z_up < Z_crit or d.get("fallback_to_critical"):
                     d["crossed_critical"] = True
                     Z_up = Z_crit
@@ -671,7 +660,7 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                 )
                 if math.isnan(Z_down):
                     d["crossed_critical"] = True
-                    Z_down = Z_crit
+                    Z_down = float('nan')
                 elif Z_down > Z_crit or d.get("fallback_to_critical"):
                     d["crossed_critical"] = True
                     Z_down = Z_crit
@@ -691,7 +680,7 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                 )
                 if math.isnan(Z_down):
                     d["crossed_critical"] = True
-                    Z_down = Z_crit
+                    Z_down = float('nan')
                 elif Z_down > Z_crit or d.get("fallback_to_critical"):
                     d["crossed_critical"] = True
                     Z_down = Z_crit
@@ -708,13 +697,10 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
         for i in range(n):
             z_sub = res_levels_sub[i]
             z_sup = res_levels_sup[i]
-            if math.isnan(z_sub) and not math.isnan(z_sup):
-                res_levels[i] = z_sup
-                res_nodes[i] = res_nodes_sup[i]
-            elif not math.isnan(z_sub) and math.isnan(z_sup):
-                res_levels[i] = z_sub
-                res_nodes[i] = res_nodes_sub[i]
-            elif not math.isnan(z_sub) and not math.isnan(z_sup):
+            if math.isnan(z_sub) or math.isnan(z_sup):
+                res_levels[i] = float('nan')
+                res_nodes[i] = None
+            else:
                 M_sub = calculate_specific_force(sections[i], z_sub, Qs[i], res_nodes_sub[i].alpha, cfg)
                 M_sup = calculate_specific_force(sections[i], z_sup, Qs[i], res_nodes_sup[i].alpha, cfg)
                 # 水跃条件 M_sub >= M_sup
@@ -741,7 +727,10 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                         sec_up, Qs[i], dists[i], z_min_up, z_max_up, cfg,
                         info_down=infos[i-1], info_up=infos[i], diag=d, Z_crit=Z_crit
                     )
-                    if Z_up < Z_crit or d.get("fallback_to_critical"):
+                    if math.isnan(Z_up):
+                        d["crossed_critical"] = True
+                        Z_up = float('nan')
+                    elif Z_up < Z_crit or d.get("fallback_to_critical"):
                         d["crossed_critical"] = True
                         Z_up = Z_crit
                     _note(i, d)
@@ -779,7 +768,10 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                         sec_up, Qs[i], dists[i], z_min_up, z_max_up, cfg,
                         info_down=infos[i+1], info_up=infos[i], diag=d, Z_crit=Z_crit
                     )
-                    if Z_up < Z_crit or d.get("fallback_to_critical"):
+                    if math.isnan(Z_up):
+                        d["crossed_critical"] = True
+                        Z_up = float('nan')
+                    elif Z_up < Z_crit or d.get("fallback_to_critical"):
                         d["crossed_critical"] = True
                         Z_up = Z_crit
                     _note(i, d)
