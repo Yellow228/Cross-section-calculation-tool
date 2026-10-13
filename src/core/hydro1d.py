@@ -558,8 +558,6 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                     if dn.hl < -1e-4:
                         # 能量反号，通常发生在混合流流态转换处处理不当。标为 NaN
                         dn.hl = float('nan')
-                        res_levels[i] = float('nan') # downstream node invalid
-                        # res_nodes[i] is already 'dn', but modifying res_levels will signal invalidity
                         spacing_issues.append((dn.sec.name, up.sec.name + " (能量反号)"))
                     dh_kin = abs(up.alpha * (up.V**2) / (2 * 9.81) - dn.alpha * (dn.V**2) / (2 * 9.81))
                     dist = abs(up.dist - dn.dist)
@@ -577,8 +575,6 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                     if dn.hl < -1e-4:
                         # 能量反号，通常发生在混合流流态转换处处理不当。标为 NaN
                         dn.hl = float('nan')
-                        res_levels[i] = float('nan') # downstream node invalid
-                        # res_nodes[i] is already 'dn', but modifying res_levels will signal invalidity
                         spacing_issues.append((dn.sec.name, up.sec.name + " (能量反号)"))
                     dh_kin = abs(up.alpha * (up.V**2) / (2 * 9.81) - dn.alpha * (dn.V**2) / (2 * 9.81))
                     dist = abs(up.dist - dn.dist)
@@ -697,9 +693,19 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
         for i in range(n):
             z_sub = res_levels_sub[i]
             z_sup = res_levels_sup[i]
-            if math.isnan(z_sub) or math.isnan(z_sup):
+            # 混合流两条水面线各自只在部分河段有解：
+            #   缓流 pass 自下游推，穿越临界后的上游断面无解(NaN)；
+            #   急流 pass 自上游推，下游断面无解(NaN)。
+            # 所以单侧 NaN 是正常的，取有解的那一侧；只有两侧都 NaN 才是真失败。
+            if math.isnan(z_sub) and math.isnan(z_sup):
                 res_levels[i] = float('nan')
                 res_nodes[i] = None
+            elif math.isnan(z_sub):
+                res_levels[i] = z_sup
+                res_nodes[i] = res_nodes_sup[i]
+            elif math.isnan(z_sup):
+                res_levels[i] = z_sub
+                res_nodes[i] = res_nodes_sub[i]
             else:
                 M_sub = calculate_specific_force(sections[i], z_sub, Qs[i], res_nodes_sub[i].alpha, cfg)
                 M_sup = calculate_specific_force(sections[i], z_sup, Qs[i], res_nodes_sup[i].alpha, cfg)
