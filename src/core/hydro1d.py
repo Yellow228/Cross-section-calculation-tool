@@ -749,7 +749,7 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                     )
                     if math.isnan(Z_down):
                         d["crossed_critical"] = True
-                        Z_down = Z_crit
+                        Z_down = float('nan')
                     elif Z_down > Z_crit or d.get("fallback_to_critical"):
                         d["crossed_critical"] = True
                         Z_down = Z_crit
@@ -790,7 +790,7 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                     )
                     if math.isnan(Z_down):
                         d["crossed_critical"] = True
-                        Z_down = Z_crit
+                        Z_down = float('nan')
                     elif Z_down > Z_crit or d.get("fallback_to_critical"):
                         d["crossed_critical"] = True
                         Z_down = Z_crit

@@ -195,8 +195,9 @@ def export_hydro1d_csv(path: str, line: ProfileLine, results: list[SectionResult
         for i, sec in enumerate(line.sections):
             c = line.chainage[i] if line.chainage and i < len(line.chainage) else sec.s[0]
             h = hs[i] if i < len(hs) else float('nan')
+            h_str = "" if (h != h) else f"{h:.6f}"
             q = sec.params.design_q
-            w.writerow([sec.name, f"{c:.3f}", f"{h:.6f}", f"{q:.3f}", line.hydro1d_regime])
+            w.writerow([sec.name, f"{c:.3f}", h_str, f"{q:.3f}", line.hydro1d_regime])
 
 
 def export_hydro1d_range_csv(path: str, line: ProfileLine, cfg: Config) -> None:
