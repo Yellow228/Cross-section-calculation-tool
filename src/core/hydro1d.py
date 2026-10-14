@@ -179,12 +179,11 @@ def compute_critical_depth(sec: Section, Q: float, z_min: float, z_max: float) -
     return (low + high) / 2
 
 
-def _secant_detail(low: float, high: float, f, tol: float,
-                   z_crit: float = float('nan')) -> tuple[float, dict]:
+
+def _secant_detail(low: float, high: float, f, tol: float) -> tuple[float, dict]:
     """割线法求根，最大迭代20次。返回 (解, 诊断)。
 
-    不收敛处理：设置最大迭代次数（20 次）。当超出迭代次数不收敛时，
-    回退为临界水深（Critical Depth）尝试继续推进；若全局发散则明确标记计算失败。
+    不收敛处理：当超出迭代次数不收敛时返回 NaN。
     """
     # 因为能量方程 f(z) = H_up - (H_down + hf + he) 可能非常非线性，在低水位容易跑偏。
     # 用几步二分法作为种子，找一个好的区间进行割线法，或者混合使用。
@@ -203,7 +202,7 @@ def _secant_detail(low: float, high: float, f, tol: float,
         mid = (a + b) / 2
         fmid = f(mid)
         if abs(fmid) < tol:
-            return mid, {"converged": True, "residual": fmid, "exhausted": False, "clipped": False, "fallback_to_critical": False, "bracket": (low, high), "z_bounds": (low, high)}
+            return mid, {"converged": True, "residual": fmid, "exhausted": False, "clipped": False,  "bracket": (low, high), "z_bounds": (low, high)}
 
         # 尝试猜测方向（一般情况随着z增大，H变大，f(z)也变大）
         if fmid > 0:
@@ -251,7 +250,6 @@ def _secant_detail(low: float, high: float, f, tol: float,
 
     converged = abs(f1) < tol
     clipped = False
-    fallback_used = False
 
     if not converged:
         exhausted = True
@@ -269,7 +267,102 @@ def _secant_detail(low: float, high: float, f, tol: float,
         "at_lower": False, # Retained for compatibility
         "at_upper": False, # Retained for compatibility
         "clipped": clipped,
-        "fallback_to_critical": fallback_used,
+
+        "bracket": (low, high),
+        "z_bounds": (low, high),
+    }
+    return x_new, diag
+
+
+
+def _secant_detail(low: float, high: float, f, tol: float) -> tuple[float, dict]:
+    """割线法求根，最大迭代20次。返回 (解, 诊断)。
+
+    不收敛处理：当超出迭代次数不收敛时返回 NaN。
+    """
+    # 因为能量方程 f(z) = H_up - (H_down + hf + he) 可能非常非线性，在低水位容易跑偏。
+    # 用几步二分法作为种子，找一个好的区间进行割线法，或者混合使用。
+    # 结合了 Brent's method 思想的简化版。
+    a = low
+    b = high
+    fa = f(a)
+    fb = f(b)
+
+    # 二分预处理，尝试收缩边界，使得符号相反
+    for _ in range(10):
+        if math.isnan(fa) or math.isnan(fb):
+            break
+        if fa * fb < 0:
+            break
+        mid = (a + b) / 2
+        fmid = f(mid)
+        if abs(fmid) < tol:
+            return mid, {"converged": True, "residual": fmid, "exhausted": False, "clipped": False,  "bracket": (low, high), "z_bounds": (low, high)}
+
+        # 尝试猜测方向（一般情况随着z增大，H变大，f(z)也变大）
+        if fmid > 0:
+            b = mid
+            fb = fmid
+        else:
+            a = mid
+            fa = fmid
+
+    x0 = a
+    x1 = b
+    f0 = fa
+    f1 = fb
+
+    exhausted = False
+    converged = False
+    max_iter = 20
+    x_new = x1
+
+    for _ in range(max_iter):
+        if math.isnan(f1) or math.isinf(f1):
+            break
+
+        if abs(f1) < tol:
+            converged = True
+            break
+
+        diff = f1 - f0
+        if abs(diff) < 1e-12:
+            exhausted = True
+            break
+
+        x_new = x1 - f1 * (x1 - x0) / diff
+
+        # 如果新解跑出去了 [a, b] 这个有根区间，退化成二分
+        if x_new < min(x0, x1) - 1.0 or x_new > max(x0, x1) + 1.0:
+             x_new = (x0 + x1) / 2.0
+
+        x0, f0 = x1, f1
+        x1 = x_new
+        try:
+            f1 = f(x1)
+        except:
+            f1 = float('inf')
+
+    converged = abs(f1) < tol
+    clipped = False
+
+    if not converged:
+        exhausted = True
+        # 不收敛时直接返回 NaN，不回退临界水深，避免伪造平滑解
+        x_new = float('nan')
+
+    if math.isnan(x_new) or math.isinf(x_new):
+        exhausted = True
+        x_new = float('nan')
+
+    diag = {
+        "converged": converged,
+        "residual": f1 if not math.isnan(x_new) else float('inf'),
+        "exhausted": exhausted,
+        "at_lower": False, # Retained for compatibility
+        "at_upper": False, # Retained for compatibility
+        "clipped": clipped,
+
         "bracket": (low, high),
         "z_bounds": (low, high),
     }
@@ -381,7 +474,7 @@ def standard_step_method_subcritical(
     # 使用割线法求根 (Bisection 在此处可能符号变化不明确，因单调性复杂)
     # 对于缓流，H_up 随 Z_up 严格单调增加
     # diff = H_up - (H_down + hf + he) 随 Z_up 递增 -> rising=True
-    x, d = _secant_detail(z_min, z_max, energy_diff, 1e-4, z_crit=Z_crit)
+    x, d = _secant_detail(z_min, z_max, energy_diff, 1e-4)
     if diag is not None:
         diag.update(d)
     return x
@@ -430,7 +523,7 @@ def standard_step_method_supercritical(
 
     # 原逻辑：diff > 0 -> high = mid，与缓流同一个走向（rising=True）。
     # 这里**逐字保持原行为**，只把它换成带诊断的实现，不改数值。
-    x, d = _secant_detail(z_min, z_max, energy_diff, 1e-4, z_crit=Z_crit)
+    x, d = _secant_detail(z_min, z_max, energy_diff, 1e-4)
     if diag is not None:
         diag.update(d)
     return x
@@ -476,6 +569,43 @@ def compute_normal_depth(sec: Section, Q: float, S0: float, z_min: float, z_max:
             low = mid
     return (low + high) / 2
 
+
+
+def _identify_control_sections(sections, Qs, dists, cfg, infos, Z_initials, flow_order):
+    """
+    预先扫描所有断面的临界水深和局部正常水深。
+    返回 z_crits, z_norms.
+    """
+    n = len(sections)
+    z_crits = [float('nan')] * n
+    z_norms = [float('nan')] * n
+
+    for idx in range(n):
+        z_min, z_max = min(sections[idx].z) + 0.01, max(sections[idx].z) + 10.0
+        z_crits[idx] = compute_critical_depth(sections[idx], Qs[idx], z_min, z_max)
+
+    local_S0s = [0.001] * n
+    for i in range(len(flow_order) - 1):
+        idx_up = flow_order[i]
+        idx_down = flow_order[i+1]
+        dist = abs(dists[idx_down] - dists[idx_up])
+        dz = min(sections[idx_up].z) - min(sections[idx_down].z)
+        if dist > 1e-6:
+            s0 = dz / dist
+            local_S0s[idx_up] = s0 if s0 > 0 else 0.001
+
+    if len(flow_order) > 1:
+        local_S0s[flow_order[-1]] = local_S0s[flow_order[-2]]
+
+    for idx in range(n):
+        z_min, z_max = min(sections[idx].z) + 0.01, max(sections[idx].z) + 10.0
+        s0 = local_S0s[idx]
+        if s0 <= 0: s0 = 0.001
+
+        z_n = compute_normal_depth(sections[idx], Qs[idx], s0, z_min, z_max, cfg, infos[idx])
+        z_norms[idx] = z_n if not math.isnan(z_n) else z_crits[idx]
+
+    return z_crits, z_norms
 
 def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                             warnings: list[str] = None) -> tuple[list[float], list['HydroNode']]:
@@ -586,136 +716,193 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
         return spacing_issues
 
 
+
     if regime in ("mixed", "auto"):
-        # 混合流推算 (Two-Pass Algorithm)
+        if warnings is not None:
+            warnings.append("一维推算：混合流推算为实验性功能，结果仅供参考。")
+
         res_levels_sub = [float('nan')] * n
         res_nodes_sub = [None] * n
+        res_levels_sup = [float('nan')] * n
+        res_nodes_sup = [None] * n
 
-        # 第一遍：缓流 (从下游推上游)
-        if ds_idx == 0:
-            res_levels_sub[0] = Z_initials[0]
+        flow_order = list(range(n)) if us_idx == 0 else list(range(n-1, -1, -1))
+
+        z_crits, z_norms = _identify_control_sections(sections, Qs, dists, cfg, infos, Z_initials, flow_order)
+
+        def get_boundary_z(idx):
+            if not math.isnan(Z_initials[idx]):
+                return Z_initials[idx]
+            return z_norms[idx]
+
+        reach_regimes = []
+        for idx in flow_order:
+            if z_norms[idx] > z_crits[idx]:
+                reach_regimes.append("subcritical")
+            else:
+                reach_regimes.append("supercritical")
+
+        sub_reaches = []
+        if n > 0:
+            curr_start = 0
+            curr_regime = reach_regimes[0]
             for i in range(1, n):
-                sec_up, sec_down = sections[i], sections[i-1]
-                z_min_up, z_max_up = min(sec_up.z) + 0.01, max(sec_up.z) + 10.0
-                d: dict = {}
-                Z_crit = compute_critical_depth(sec_up, Qs[i], z_min_up, z_max_up)
-                Z_up = standard_step_method_subcritical(
-                    sec_down, res_levels_sub[i-1], Qs[i-1], dists[i-1],
-                    sec_up, Qs[i], dists[i], z_min_up, z_max_up, cfg,
-                    info_down=infos[i-1], info_up=infos[i], diag=d, Z_crit=Z_crit
-                )
-                if math.isnan(Z_up):
-                    d["crossed_critical"] = True
-                    Z_up = float('nan')
-                elif Z_up < Z_crit or d.get("fallback_to_critical"):
-                    d["crossed_critical"] = True
-                    Z_up = Z_crit
-                _note(i, d)
-                res_levels_sub[i] = Z_up
-        else:
-            res_levels_sub[-1] = Z_initials[-1]
-            for i in range(n - 2, -1, -1):
-                sec_up, sec_down = sections[i], sections[i+1]
-                z_min_up, z_max_up = min(sec_up.z) + 0.01, max(sec_up.z) + 10.0
+                if reach_regimes[i] != curr_regime:
+                    sub_reaches.append((curr_start, i - 1, curr_regime))
+                    curr_start = i
+                    curr_regime = reach_regimes[i]
+            sub_reaches.append((curr_start, n - 1, curr_regime))
+
+        sub_control_points = []
+        sub_control_points.append((n - 1, get_boundary_z(flow_order[-1])))
+        for i in range(len(sub_reaches) - 1):
+            s1, e1, r1 = sub_reaches[i]
+            s2, e2, r2 = sub_reaches[i+1]
+            if r1 == "subcritical" and r2 == "supercritical":
+                z_c = z_crits[flow_order[e1]]
+                sub_control_points.append((e1, z_c * 1.001))
+
+        sup_control_points = []
+        sup_control_points.append((0, get_boundary_z(flow_order[0])))
+        for i in range(len(sub_reaches) - 1):
+            s1, e1, r1 = sub_reaches[i]
+            s2, e2, r2 = sub_reaches[i+1]
+            if r1 == "subcritical" and r2 == "supercritical":
+                z_c = z_crits[flow_order[s2]]
+                sup_control_points.append((s2, z_c * 0.999))
+
+        for ctrl_idx_pos, z_start in sub_control_points:
+            real_idx = flow_order[ctrl_idx_pos]
+            if z_start < z_crits[real_idx]:
+                z_start = z_crits[real_idx] * 1.001
+            res_levels_sub[real_idx] = z_start
+
+            for j in range(ctrl_idx_pos - 1, -1, -1):
+                curr_idx = flow_order[j]
+                prev_idx = flow_order[j+1]
+                z_min, z_max = min(sections[curr_idx].z) + 0.01, max(sections[curr_idx].z) + 10.0
                 d = {}
-                Z_crit = compute_critical_depth(sec_up, Qs[i], z_min_up, z_max_up)
-                Z_up = standard_step_method_subcritical(
-                    sec_down, res_levels_sub[i+1], Qs[i+1], dists[i+1],
-                    sec_up, Qs[i], dists[i], z_min_up, z_max_up, cfg,
-                    info_down=infos[i+1], info_up=infos[i], diag=d, Z_crit=Z_crit
+
+                z_up = standard_step_method_subcritical(
+                    sections[prev_idx], res_levels_sub[prev_idx], Qs[prev_idx], dists[prev_idx],
+                    sections[curr_idx], Qs[curr_idx], dists[curr_idx], z_crits[curr_idx], z_max, cfg,
+                    info_down=infos[prev_idx], info_up=infos[curr_idx], diag=d, Z_crit=z_crits[curr_idx]
                 )
-                if math.isnan(Z_up):
+
+                if math.isnan(z_up) or z_up <= z_crits[curr_idx]:
                     d["crossed_critical"] = True
-                    Z_up = float('nan')
-                elif Z_up < Z_crit or d.get("fallback_to_critical"):
-                    d["crossed_critical"] = True
-                    Z_up = Z_crit
-                _note(i, d)
-                res_levels_sub[i] = Z_up
+                    _note(curr_idx, d)
+                    break
+
+                _note(curr_idx, d)
+                res_levels_sub[curr_idx] = z_up
 
         for i in range(n):
             if not math.isnan(res_levels_sub[i]):
-                node = get_node_state(sections[i], res_levels_sub[i], Qs[i], dists[i], cfg, infos[i])
-                node.Z_crit = compute_critical_depth(sections[i], Qs[i], min(sections[i].z)+0.01, max(sections[i].z)+10.0)
-                res_nodes_sub[i] = node
+                res_nodes_sub[i] = get_node_state(sections[i], res_levels_sub[i], Qs[i], dists[i], cfg, infos[i])
+                res_nodes_sub[i].Z_crit = z_crits[i]
 
-        # 第二遍：急流 (从上游推下游)
-        res_levels_sup = [float('nan')] * n
-        res_nodes_sup = [None] * n
-        if ds_idx == 0:
-            res_levels_sup[-1] = Z_initials[-1]
-            for i in range(n - 2, -1, -1):
-                sec_up, sec_down = sections[i+1], sections[i]
-                z_min_down, z_max_down = min(sec_down.z) + 0.01, max(sec_down.z) + 10.0
+        for ctrl_idx_pos, z_start in sup_control_points:
+            real_idx = flow_order[ctrl_idx_pos]
+            if z_start > z_crits[real_idx]:
+                z_start = z_crits[real_idx] * 0.999
+            res_levels_sup[real_idx] = z_start
+
+            for j in range(ctrl_idx_pos + 1, n):
+                curr_idx = flow_order[j]
+                prev_idx = flow_order[j-1]
+                z_min, z_max = min(sections[curr_idx].z) + 0.01, max(sections[curr_idx].z) + 10.0
                 d = {}
-                Z_crit = compute_critical_depth(sec_down, Qs[i], z_min_down, z_max_down)
-                Z_down = standard_step_method_supercritical(
-                    sec_up, res_levels_sup[i+1], Qs[i+1], dists[i+1],
-                    sec_down, Qs[i], dists[i], z_min_down, z_max_down, cfg,
-                    info_up=infos[i+1], info_down=infos[i], diag=d, Z_crit=Z_crit
+
+                z_down = standard_step_method_supercritical(
+                    sections[prev_idx], res_levels_sup[prev_idx], Qs[prev_idx], dists[prev_idx],
+                    sections[curr_idx], Qs[curr_idx], dists[curr_idx], z_min, z_crits[curr_idx], cfg,
+                    info_up=infos[prev_idx], info_down=infos[curr_idx], diag=d, Z_crit=z_crits[curr_idx]
                 )
-                if math.isnan(Z_down):
+
+                if math.isnan(z_down) or z_down >= z_crits[curr_idx]:
                     d["crossed_critical"] = True
-                    Z_down = float('nan')
-                elif Z_down > Z_crit or d.get("fallback_to_critical"):
-                    d["crossed_critical"] = True
-                    Z_down = Z_crit
-                _note(i, d)
-                res_levels_sup[i] = Z_down
-        else:
-            res_levels_sup[0] = Z_initials[0]
-            for i in range(1, n):
-                sec_up, sec_down = sections[i-1], sections[i]
-                z_min_down, z_max_down = min(sec_down.z) + 0.01, max(sec_down.z) + 10.0
-                d = {}
-                Z_crit = compute_critical_depth(sec_down, Qs[i], z_min_down, z_max_down)
-                Z_down = standard_step_method_supercritical(
-                    sec_up, res_levels_sup[i-1], Qs[i-1], dists[i-1],
-                    sec_down, Qs[i], dists[i], z_min_down, z_max_down, cfg,
-                    info_up=infos[i-1], info_down=infos[i], diag=d, Z_crit=Z_crit
-                )
-                if math.isnan(Z_down):
-                    d["crossed_critical"] = True
-                    Z_down = float('nan')
-                elif Z_down > Z_crit or d.get("fallback_to_critical"):
-                    d["crossed_critical"] = True
-                    Z_down = Z_crit
-                _note(i, d)
-                res_levels_sup[i] = Z_down
+                    _note(curr_idx, d)
+                    break
+
+                _note(curr_idx, d)
+                res_levels_sup[curr_idx] = z_down
 
         for i in range(n):
             if not math.isnan(res_levels_sup[i]):
-                node = get_node_state(sections[i], res_levels_sup[i], Qs[i], dists[i], cfg, infos[i])
-                node.Z_crit = res_nodes_sub[i].Z_crit if res_nodes_sub[i] else compute_critical_depth(sections[i], Qs[i], min(sections[i].z)+0.01, max(sections[i].z)+10.0)
-                res_nodes_sup[i] = node
+                res_nodes_sup[i] = get_node_state(sections[i], res_levels_sup[i], Qs[i], dists[i], cfg, infos[i])
+                res_nodes_sup[i].Z_crit = z_crits[i]
 
-        # 根据比力 (Specific Force) 合并水面线
+        M_sub_arr = [float('nan')] * n
+        M_sup_arr = [float('nan')] * n
+
         for i in range(n):
-            z_sub = res_levels_sub[i]
-            z_sup = res_levels_sup[i]
-            # 混合流两条水面线各自只在部分河段有解：
-            #   缓流 pass 自下游推，穿越临界后的上游断面无解(NaN)；
-            #   急流 pass 自上游推，下游断面无解(NaN)。
-            # 所以单侧 NaN 是正常的，取有解的那一侧；只有两侧都 NaN 才是真失败。
-            if math.isnan(z_sub) and math.isnan(z_sup):
-                res_levels[i] = float('nan')
-                res_nodes[i] = None
-            elif math.isnan(z_sub):
-                res_levels[i] = z_sup
-                res_nodes[i] = res_nodes_sup[i]
-            elif math.isnan(z_sup):
-                res_levels[i] = z_sub
-                res_nodes[i] = res_nodes_sub[i]
-            else:
-                M_sub = calculate_specific_force(sections[i], z_sub, Qs[i], res_nodes_sub[i].alpha, cfg)
-                M_sup = calculate_specific_force(sections[i], z_sup, Qs[i], res_nodes_sup[i].alpha, cfg)
-                # 水跃条件 M_sub >= M_sup
-                if M_sub >= M_sup:
-                    res_levels[i] = z_sub
+            if res_nodes_sub[i]:
+                M_sub_arr[i] = calculate_specific_force(sections[i], res_levels_sub[i], Qs[i], res_nodes_sub[i].alpha, cfg)
+            if res_nodes_sup[i]:
+                M_sup_arr[i] = calculate_specific_force(sections[i], res_levels_sup[i], Qs[i], res_nodes_sup[i].alpha, cfg)
+
+        current_regime = "subcritical"
+
+        if not math.isnan(M_sup_arr[us_idx]) and not math.isnan(M_sub_arr[us_idx]):
+            if M_sup_arr[us_idx] >= M_sub_arr[us_idx]:
+                current_regime = "supercritical"
+        elif not math.isnan(M_sup_arr[us_idx]):
+            current_regime = "supercritical"
+
+        for i in flow_order:
+            m_sub = M_sub_arr[i]
+            m_sup = M_sup_arr[i]
+
+            valid_sub = not math.isnan(m_sub)
+            valid_sup = not math.isnan(m_sup)
+
+            if current_regime == "supercritical":
+                if valid_sup and valid_sub:
+                    if m_sup <= m_sub:
+                        current_regime = "subcritical"
+                        res_levels[i] = res_levels_sub[i]
+                        res_nodes[i] = res_nodes_sub[i]
+                    else:
+                        res_levels[i] = res_levels_sup[i]
+                        res_nodes[i] = res_nodes_sup[i]
+                elif valid_sup:
+                    res_levels[i] = res_levels_sup[i]
+                    res_nodes[i] = res_nodes_sup[i]
+                elif valid_sub:
+                    current_regime = "subcritical"
+                    res_levels[i] = res_levels_sub[i]
                     res_nodes[i] = res_nodes_sub[i]
                 else:
-                    res_levels[i] = z_sup
+                    res_levels[i] = float('nan')
+                    res_nodes[i] = None
+
+            else:
+                if not valid_sub and valid_sup:
+                    current_regime = "supercritical"
+                    res_levels[i] = res_levels_sup[i]
                     res_nodes[i] = res_nodes_sup[i]
+                elif valid_sub:
+                    if valid_sup and m_sup >= m_sub:
+                        current_regime = "supercritical"
+                        res_levels[i] = res_levels_sup[i]
+                        res_nodes[i] = res_nodes_sup[i]
+                    else:
+                        res_levels[i] = res_levels_sub[i]
+                        res_nodes[i] = res_nodes_sub[i]
+                else:
+                    res_levels[i] = float('nan')
+                    res_nodes[i] = None
+
+        jump_unlocated = False
+        for i in range(1, len(flow_order)):
+            prev_i = flow_order[i-1]
+            curr_i = flow_order[i]
+            if math.isnan(res_levels[prev_i]) or math.isnan(res_levels[curr_i]):
+                jump_unlocated = True
+
+        if jump_unlocated and warnings is not None:
+            warnings.append("一维推算：该段无法确定水跃位置，部分断面可能没有有效解。")
 
         spacing_issues = calc_hl_and_warnings()
     else:
@@ -736,7 +923,7 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                     if math.isnan(Z_up):
                         d["crossed_critical"] = True
                         Z_up = float('nan')
-                    elif Z_up < Z_crit or d.get("fallback_to_critical"):
+                    elif Z_up < Z_crit :
                         d["crossed_critical"] = True
                         Z_up = Z_crit
                     _note(i, d)
@@ -756,7 +943,7 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                     if math.isnan(Z_down):
                         d["crossed_critical"] = True
                         Z_down = float('nan')
-                    elif Z_down > Z_crit or d.get("fallback_to_critical"):
+                    elif Z_down > Z_crit :
                         d["crossed_critical"] = True
                         Z_down = Z_crit
                     _note(i, d)
@@ -777,7 +964,7 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                     if math.isnan(Z_up):
                         d["crossed_critical"] = True
                         Z_up = float('nan')
-                    elif Z_up < Z_crit or d.get("fallback_to_critical"):
+                    elif Z_up < Z_crit :
                         d["crossed_critical"] = True
                         Z_up = Z_crit
                     _note(i, d)
@@ -797,7 +984,7 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                     if math.isnan(Z_down):
                         d["crossed_critical"] = True
                         Z_down = float('nan')
-                    elif Z_down > Z_crit or d.get("fallback_to_critical"):
+                    elif Z_down > Z_crit :
                         d["crossed_critical"] = True
                         Z_down = Z_crit
                     _note(i, d)
