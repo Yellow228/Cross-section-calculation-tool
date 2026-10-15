@@ -22,7 +22,7 @@ from core.model import Section, SectionParams, SectionResult, TerrainInfo
 from core.rating import compute_rating_curve, hvec_row_counts, matlab_colon
 from core.solver import solve_section
 from core.terrain import analyze_terrain
-from core.hydro1d import (_bisect_detail, compute_hydro1d_profile,
+from core.hydro1d import (compute_hydro1d_profile,
                          get_node_state)
 from core.chainage import chainage_at_distance, compute_chainage, rebase_chainage
 from core.model import ProfileData, ProfileLine, Project
@@ -2948,102 +2948,7 @@ class TestZoneConductance(unittest.TestCase):
         self.assertAlmostEqual(node.Sf, (50.0 / node.K) ** 2, places=12)
 
 
-class TestBisectDiagnostics(unittest.TestCase):
-    """一维推算的二分求根必须能报出"贴边假解"和"不收敛"。
-
-    背景：搜索区间是**写死**的 `[min(z)+0.01, max(z)+10]`。下游水位很高、
-    回水上溯超过 `max(z)+10` 时真解落在区间外，二分只会一路贴到边界，
-    把边界附近的**假解**当答案返回——不报错、不警告，用户拿到一个
-    平白低十几米的水位，还以为是算出来的。
-
-    ⚠ 判据不能写成"看解距离边界多远"：二分只要没提前收敛，区间宽度就会被
-      压到 <= tol 才退出，此时解距离原边界**恰好还有约 tol/2**
-      （mid 永远取区间中点），任何 tol 量级的绝对容差都测不出贴边。
-      正确判据是：**区间耗尽（宽度 <= tol）且残差未收敛**。
-    """
-
-    def test_converged_root_inside_bracket(self):
-        """区间内有解：converged=True，且**不能**被误报成贴边。"""
-        x, d = _bisect_detail(97.01, 112.80, lambda z: z - 103.0, 1e-4,
-                              rising=True)
-        self.assertTrue(d["converged"])
-        self.assertFalse(d["clipped"])
-        self.assertAlmostEqual(x, 103.0, places=3)
-
-    def test_root_far_outside_upper_bound_is_flagged(self):
-        """真解远在上界之外：区间耗尽且不收敛 -> 必须标记贴边。
-
-        这条是 P3 的核心回归：老代码在这里静默返回 ~112.80（上界）。
-        """
-        x, d = _bisect_detail(97.01, 112.80, lambda z: z - 125.0, 1e-4,
-                              rising=True)
-        self.assertFalse(d["converged"])
-        self.assertTrue(d["clipped"])
-        self.assertTrue(d["at_upper"])
-        # 解确实被挤到了上界附近
-        self.assertLess(abs(x - 112.80), 1e-3)
-
-    def test_root_far_below_lower_bound_is_flagged(self):
-        """真解远在下界之外：同样必须标记贴边。"""
-        x, d = _bisect_detail(97.01, 112.80, lambda z: z - 90.0, 1e-4,
-                              rising=True)
-        self.assertFalse(d["converged"])
-        self.assertTrue(d["clipped"])
-        self.assertTrue(d["at_lower"])
-        self.assertLess(abs(x - 97.01), 1e-3)
-
-    def test_constant_residual_is_flagged(self):
-        """残差恒定不变（符号永不翻转）：区间耗尽，必须标记贴边。"""
-        _x, d = _bisect_detail(97.01, 112.80, lambda z: -8.2, 1e-4,
-                               rising=True)
-        self.assertFalse(d["converged"])
-        self.assertTrue(d["clipped"])
-        self.assertAlmostEqual(d["residual"], -8.2, places=9)
-
-    def test_near_boundary_but_converged_is_not_clipped(self):
-        """真解靠近边界但**确实收敛**时，不许误报贴边。
-
-        这是最容易矫枉过正的一处：真解离上界只有 0.3 m 是合法结果，
-        把它报成"不可信"会让用户对正常结果失去信任。
-        """
-        x, d = _bisect_detail(97.01, 112.80, lambda z: z - 112.5, 1e-4,
-                              rising=True)
-        self.assertTrue(d["converged"])
-        self.assertFalse(d["clipped"])
-        self.assertAlmostEqual(x, 112.5, places=3)
-
-    def test_bisect_matches_original_loop_numerically(self):
-        """重构后的 `_bisect_detail` 与重构前的循环**数值逐位相同**。
-
-        必须成立：这次改动只该"加诊断"，不该动任何计算结果。
-        任一场景出现偏差就说明改错了。
-        """
-        def original(low, high, f, tol, rising=True):
-            for _ in range(50):
-                mid = (low + high) / 2
-                diff = f(mid)
-                if abs(diff) < tol or (high - low) < tol:
-                    return mid
-                if (diff > 0) == rising:
-                    high = mid
-                else:
-                    low = mid
-            return (low + high) / 2
-
-        cases = [
-            ("root inside", lambda z: z - 103.0),
-            ("root above", lambda z: z - 125.0),
-            ("root below", lambda z: z - 90.0),
-            ("constant", lambda z: -8.2),
-            ("nonlinear", lambda z: math.exp((z - 103.0) / 5.0) - 1.0),
-        ]
-        for tag, f in cases:
-            with self.subTest(case=tag):
-                self.assertEqual(original(97.01, 112.80, f, 1e-4),
-                                 _bisect_detail(97.01, 112.80, f, 1e-4,
-                                                rising=True)[0],
-                                 f"{tag} 的数值结果被改动")
-
+class TestProfileWarnings(unittest.TestCase):
     def test_profile_reports_clipped_section(self):
         """整条纵断面线跑完，`warnings` 出参必须把贴边断面报出来。
 

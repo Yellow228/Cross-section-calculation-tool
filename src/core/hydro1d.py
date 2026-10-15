@@ -4,7 +4,7 @@
 支持流态：
   - 缓流（subcritical）：从下游往上游推算
   - 急流（supercritical）：从上游往下游推算
-  - 混合流 / 自动（mixed / auto）：暂时回退到缓流处理
+  - 混合流 / 自动（mixed / auto）：采用 Two-Pass 算法，通过比力守恒（共轭水深）定位控制断面与水跃
 """
 
 import math
@@ -179,12 +179,10 @@ def compute_critical_depth(sec: Section, Q: float, z_min: float, z_max: float) -
     return (low + high) / 2
 
 
-def _secant_detail(low: float, high: float, f, tol: float,
-                   z_crit: float = float('nan')) -> tuple[float, dict]:
+def _secant_detail(low: float, high: float, f, tol: float) -> tuple[float, dict]:
     """割线法求根，最大迭代20次。返回 (解, 诊断)。
 
-    不收敛处理：设置最大迭代次数（20 次）。当超出迭代次数不收敛时，
-    回退为临界水深（Critical Depth）尝试继续推进；若全局发散则明确标记计算失败。
+    不收敛处理：最大迭代次数 20 次。当超出迭代次数仍不收敛时，即返回 NaN。
     """
     # 因为能量方程 f(z) = H_up - (H_down + hf + he) 可能非常非线性，在低水位容易跑偏。
     # 用几步二分法作为种子，找一个好的区间进行割线法，或者混合使用。
@@ -203,7 +201,7 @@ def _secant_detail(low: float, high: float, f, tol: float,
         mid = (a + b) / 2
         fmid = f(mid)
         if abs(fmid) < tol:
-            return mid, {"converged": True, "residual": fmid, "exhausted": False, "clipped": False, "fallback_to_critical": False, "bracket": (low, high), "z_bounds": (low, high)}
+            return mid, {"converged": True, "residual": fmid, "exhausted": False, "clipped": False, "bracket": (low, high), "z_bounds": (low, high)}
 
         # 尝试猜测方向（一般情况随着z增大，H变大，f(z)也变大）
         if fmid > 0:
@@ -251,11 +249,10 @@ def _secant_detail(low: float, high: float, f, tol: float,
 
     converged = abs(f1) < tol
     clipped = False
-    fallback_used = False
 
     if not converged:
         exhausted = True
-        # 不收敛时直接返回 NaN，不回退临界水深，避免伪造平滑解
+        # 不收敛时直接返回 NaN，不许伪造解
         x_new = float('nan')
 
     if math.isnan(x_new) or math.isinf(x_new):
@@ -269,71 +266,10 @@ def _secant_detail(low: float, high: float, f, tol: float,
         "at_lower": False, # Retained for compatibility
         "at_upper": False, # Retained for compatibility
         "clipped": clipped,
-        "fallback_to_critical": fallback_used,
         "bracket": (low, high),
         "z_bounds": (low, high),
     }
     return x_new, diag
-
-
-def _bisect_detail(low: float, high: float, f, tol: float,
-                   rising: bool) -> tuple[float, dict]:
-    """二分求根，返回 (解, 诊断)。
-
-    ⚠ **为什么必须带诊断**：区间是固定死的 `[min(z)+0.01, max(z)+10]`。
-    下游水位很高、回水上溯超过 `max(z)+10` 时，真实解落在区间之外，
-    二分只会一路贴到边界并把**边界附近的假解**当答案返回——不报错、
-    也没有任何提示，用户拿到的是一个平白低十几米的水位。
-
-    判据（重要，别退回"看解离边界多远"的写法）：
-    二分只要没提前收敛，区间宽度就会被压到 <= tol 才退出。此时解的
-    位置距离原边界**恰好还有约 tol/2**（因为 mid 永远取区间中点），
-    所以任何以 tol 为量级的绝对容差都测不出"贴边"——必须改成：
-        **区间耗尽（宽度 <= tol）且残差未收敛** => 真解在区间外，结果不可信。
-    纯残差发散（例如 1e14）也会落进这个分支，因为区间同样被耗尽。
-    反之，真解恰好靠近边界但**确实收敛**时，`converged` 为真，不算贴边。
-
-    rising=True 表示 f 随 x 递增（f>0 说明猜大了，往小收）。
-    """
-    orig_low, orig_high = low, high
-    x = (low + high) / 2.0
-    f_x = f(x)
-    exhausted = False
-    for _ in range(50):
-        mid = (low + high) / 2.0
-        f_mid = f(mid)
-        x, f_x = mid, f_mid
-        if abs(f_mid) < tol:
-            break
-        if (high - low) < tol:
-            exhausted = True
-            break
-        if (f_mid > 0) == rising:
-            high = mid
-        else:
-            low = mid
-
-    converged = abs(f_x) < tol
-    clipped = exhausted and not converged
-    # 兜底：解因浮点原因正好落在原区间端点上，同样视为贴边。
-    span = orig_high - orig_low
-    margin = 1e-9 * max(1.0, abs(span))
-    at_lower = abs(x - orig_low) <= max(margin, 0.5 * tol)
-    at_upper = abs(x - orig_high) <= max(margin, 0.5 * tol)
-    if at_lower or at_upper:
-        clipped = True
-
-    diag = {
-        "converged": converged,
-        "residual": f_x,
-        "exhausted": exhausted,
-        "at_lower": at_lower,
-        "at_upper": at_upper,
-        "clipped": clipped,
-        "bracket": (low, high),
-        "z_bounds": (orig_low, orig_high),
-    }
-    return x, diag
 
 
 def standard_step_method_subcritical(
@@ -381,7 +317,7 @@ def standard_step_method_subcritical(
     # 使用割线法求根 (Bisection 在此处可能符号变化不明确，因单调性复杂)
     # 对于缓流，H_up 随 Z_up 严格单调增加
     # diff = H_up - (H_down + hf + he) 随 Z_up 递增 -> rising=True
-    x, d = _secant_detail(z_min, z_max, energy_diff, 1e-4, z_crit=Z_crit)
+    x, d = _secant_detail(z_min, z_max, energy_diff, 1e-4)
     if diag is not None:
         diag.update(d)
     return x
@@ -430,7 +366,7 @@ def standard_step_method_supercritical(
 
     # 原逻辑：diff > 0 -> high = mid，与缓流同一个走向（rising=True）。
     # 这里**逐字保持原行为**，只把它换成带诊断的实现，不改数值。
-    x, d = _secant_detail(z_min, z_max, energy_diff, 1e-4, z_crit=Z_crit)
+    x, d = _secant_detail(z_min, z_max, energy_diff, 1e-4)
     if diag is not None:
         diag.update(d)
     return x
@@ -527,15 +463,23 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
         q_val = 50.0  # 与项目的默认占位符保持一致
 
     Qs = [q_val] * n
+    regime = line.hydro1d_regime
+
 
     for i, sec in enumerate(sections):
+        # 边界断面如果是起推断面，使用正常水深 (Normal Depth)
+        # 仅当混合流时完全忽略 design_level
+        # 对于缓流或急流，如果结果传入了 design_level，仍然可以作为用户的指定起推水位，
+        # 但我们先将正常水深作为后备。不过为了保证旧单向流测试不变，我们在单一流态
+        # 保留从 design_level 获取。
         res_data = results.get(sec.name)
-        if res_data and not math.isnan(res_data.design_level):
+        if regime not in ("mixed", "auto") and res_data and not math.isnan(res_data.design_level):
             z_init = res_data.design_level
         else:
-            # 边界断面如果是起推断面，使用正常水深 (Normal Depth)
-            # 我们不知道当前断面是不是起推断面，所以只要没填就尝试使用正常水深兜底，而不是 max(sec.z)
-            z_init = compute_normal_depth(sec, Qs[i], S0, min(sec.z) + 0.01, max(sec.z) + 10.0, cfg, infos[i])
+            local_S0 = sec.params.slope
+            if math.isnan(local_S0) or local_S0 <= 0:
+                local_S0 = S0
+            z_init = compute_normal_depth(sec, Qs[i], local_S0, min(sec.z) + 0.01, max(sec.z) + 10.0, cfg, infos[i])
             if math.isnan(z_init):
                 z_init = max(sec.z)
         Z_initials.append(z_init)
@@ -588,6 +532,7 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
 
     if regime in ("mixed", "auto"):
         # 混合流推算 (Two-Pass Algorithm)
+        _diags.append(("", {"mixed_flow_experimental": True}))
         res_levels_sub = [float('nan')] * n
         res_nodes_sub = [None] * n
 
@@ -607,7 +552,7 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                 if math.isnan(Z_up):
                     d["crossed_critical"] = True
                     Z_up = float('nan')
-                elif Z_up < Z_crit or d.get("fallback_to_critical"):
+                elif Z_up < Z_crit:
                     d["crossed_critical"] = True
                     Z_up = Z_crit
                 _note(i, d)
@@ -627,7 +572,7 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                 if math.isnan(Z_up):
                     d["crossed_critical"] = True
                     Z_up = float('nan')
-                elif Z_up < Z_crit or d.get("fallback_to_critical"):
+                elif Z_up < Z_crit:
                     d["crossed_critical"] = True
                     Z_up = Z_crit
                 _note(i, d)
@@ -657,7 +602,7 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                 if math.isnan(Z_down):
                     d["crossed_critical"] = True
                     Z_down = float('nan')
-                elif Z_down > Z_crit or d.get("fallback_to_critical"):
+                elif Z_down > Z_crit:
                     d["crossed_critical"] = True
                     Z_down = Z_crit
                 _note(i, d)
@@ -677,7 +622,7 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                 if math.isnan(Z_down):
                     d["crossed_critical"] = True
                     Z_down = float('nan')
-                elif Z_down > Z_crit or d.get("fallback_to_critical"):
+                elif Z_down > Z_crit:
                     d["crossed_critical"] = True
                     Z_down = Z_crit
                 _note(i, d)
@@ -689,33 +634,61 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                 node.Z_crit = res_nodes_sub[i].Z_crit if res_nodes_sub[i] else compute_critical_depth(sections[i], Qs[i], min(sections[i].z)+0.01, max(sections[i].z)+10.0)
                 res_nodes_sup[i] = node
 
-        # 根据比力 (Specific Force) 合并水面线
-        for i in range(n):
+        # 根据比力 (Specific Force) 合并水面线 (M_up = M_down)
+        # 逐断面从上游往下游推进，当前流态初始化为急流（或者缓流如果第一段就是缓流）
+        # HEC-RAS 混合流判定逻辑：对于同时有缓流和急流解的区域，比较比力 M。
+        # 如果 M_sub > M_sup，表明水流倾向于保持在具有较大比力的缓流状态（此时如果上游是急流，则发生水跃）。
+        # 正确的做法是从上游推下游。只要水流是急流，我们检查是否遇到 M_sub >= M_sup。一旦遇到，
+        # 水流发生水跃，变为缓流，并对后续所有断面保持缓流，除非再次发生跌水（这会在单侧 NaN 逻辑里自然处理）。
+
+        current_regime_is_supercritical = True
+
+        # Determine initial regime at upstream end
+        if math.isnan(res_levels_sup[us_idx]) and not math.isnan(res_levels_sub[us_idx]):
+            current_regime_is_supercritical = False
+
+        if ds_idx == 0:
+            traverse_order = range(n - 1, -1, -1)
+        else:
+            traverse_order = range(n)
+
+        for i in traverse_order:
             z_sub = res_levels_sub[i]
             z_sup = res_levels_sup[i]
-            # 混合流两条水面线各自只在部分河段有解：
-            #   缓流 pass 自下游推，穿越临界后的上游断面无解(NaN)；
-            #   急流 pass 自上游推，下游断面无解(NaN)。
-            # 所以单侧 NaN 是正常的，取有解的那一侧；只有两侧都 NaN 才是真失败。
+
             if math.isnan(z_sub) and math.isnan(z_sup):
                 res_levels[i] = float('nan')
                 res_nodes[i] = None
             elif math.isnan(z_sub):
                 res_levels[i] = z_sup
                 res_nodes[i] = res_nodes_sup[i]
+                current_regime_is_supercritical = True
             elif math.isnan(z_sup):
                 res_levels[i] = z_sub
                 res_nodes[i] = res_nodes_sub[i]
+                current_regime_is_supercritical = False
             else:
                 M_sub = calculate_specific_force(sections[i], z_sub, Qs[i], res_nodes_sub[i].alpha, cfg)
                 M_sup = calculate_specific_force(sections[i], z_sup, Qs[i], res_nodes_sup[i].alpha, cfg)
-                # 水跃条件 M_sub >= M_sup
-                if M_sub >= M_sup:
+
+                if current_regime_is_supercritical:
+                    # In supercritical flow, we check if downstream subcritical profile has greater or equal specific force
+                    # If M_sub >= M_sup, a hydraulic jump occurs to subcritical flow.
+                    if M_sub >= M_sup:
+                        current_regime_is_supercritical = False
+                        res_levels[i] = z_sub
+                        res_nodes[i] = res_nodes_sub[i]
+                    else:
+                        res_levels[i] = z_sup
+                        res_nodes[i] = res_nodes_sup[i]
+                else:
+                    # In subcritical flow, we normally stay in subcritical.
+                    # A transition to supercritical only happens at a drop (跌水), which is
+                    # naturally handled when subcritical profile drops out (NaN) and we are forced
+                    # to switch back to supercritical (the elif math.isnan(z_sub) branch).
+                    # However, if both exist and we are currently subcritical, we just stay subcritical.
                     res_levels[i] = z_sub
                     res_nodes[i] = res_nodes_sub[i]
-                else:
-                    res_levels[i] = z_sup
-                    res_nodes[i] = res_nodes_sup[i]
 
         spacing_issues = calc_hl_and_warnings()
     else:
@@ -736,7 +709,7 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                     if math.isnan(Z_up):
                         d["crossed_critical"] = True
                         Z_up = float('nan')
-                    elif Z_up < Z_crit or d.get("fallback_to_critical"):
+                    elif Z_up < Z_crit:
                         d["crossed_critical"] = True
                         Z_up = Z_crit
                     _note(i, d)
@@ -756,7 +729,7 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                     if math.isnan(Z_down):
                         d["crossed_critical"] = True
                         Z_down = float('nan')
-                    elif Z_down > Z_crit or d.get("fallback_to_critical"):
+                    elif Z_down > Z_crit:
                         d["crossed_critical"] = True
                         Z_down = Z_crit
                     _note(i, d)
@@ -777,7 +750,7 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                     if math.isnan(Z_up):
                         d["crossed_critical"] = True
                         Z_up = float('nan')
-                    elif Z_up < Z_crit or d.get("fallback_to_critical"):
+                    elif Z_up < Z_crit:
                         d["crossed_critical"] = True
                         Z_up = Z_crit
                     _note(i, d)
@@ -797,7 +770,7 @@ def compute_hydro1d_profile(line: ProfileLine, cfg, results: dict = None,
                     if math.isnan(Z_down):
                         d["crossed_critical"] = True
                         Z_down = float('nan')
-                    elif Z_down > Z_crit or d.get("fallback_to_critical"):
+                    elif Z_down > Z_crit:
                         d["crossed_critical"] = True
                         Z_down = Z_crit
                     _note(i, d)
@@ -892,12 +865,15 @@ def _hydro1d_warnings(line: ProfileLine, diags: list[tuple[str, dict]], spacing_
 
     out: list[str] = []
 
+    if any(d.get("mixed_flow_experimental") for _, d in diags):
+        out.append("一维推算：混合流推算为实验性功能，未对所有复杂水跃和跌水场景进行完整验证，结果仅供参考。")
+
     if crossed:
         names = "、".join(nm for nm, _ in crossed[:5])
         more = f" 等 {len(crossed)} 个" if len(crossed) > 5 else ""
         out.append(
             f"一维推算：{names}{more} 断面发生流态转换（计算水位穿越临界水深），"
-            f"可能存在水跃或跌水。当前模型未显式处理混合流，结果仅供参考。")
+            f"可能存在水跃或跌水。")
     if clipped:
         names = "、".join(nm for nm, _ in clipped[:5])
         more = f" 等 {len(clipped)} 个" if len(clipped) > 5 else ""

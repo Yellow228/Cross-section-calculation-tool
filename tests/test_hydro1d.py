@@ -141,5 +141,71 @@ class TestHydro1D(unittest.TestCase):
         # 只要没有异常且能计算出一个合理的值，就说明这部分计算能跑通
         self.assertTrue(Z_up_sub > 10.0)
 
+
+    def test_hydraulic_jump_analytic(self):
+        # We need a mild slope section to naturally result in h=2.95m.
+        # If we carefully select the slopes so the jump occurs right around the middle section
+
+        # To hit exactly M_sub = M_sup at S2:
+        # S2 needs h1 = 0.5 (supercritical pass), and h2 = 2.9525 (subcritical pass).
+        # We just need to make sure the S1 starts at h=0.5 and S3 starts at h=2.9525
+
+        h1_exact = 0.5
+        h2_exact = 2.952527114
+
+        # Set S0 such that normal depth matches h1 and h2
+        # Need to include vertical walls for P=B+2h (rectangular channel).
+        # Otherwise P=B because there are no side walls in the section definition.
+        def make_rect_sec(name, z_bed, slope, n):
+            # width is 10, from x=0 to x=10
+            x = [0, 0, 10, 10]
+            y = [0, 0, 0, 0]
+            s = [0, 0.01, 10.01, 10.02]
+            z = [z_bed+10, z_bed, z_bed, z_bed+10]
+            return Section(name=name, x=x, y=y, s=s, z=z, params=SectionParams(name=name, design_q=50.0, roughness=n, slope=slope))
+
+        S_steep = 0.028605
+        S_mild = 0.001132
+
+        sec1 = make_rect_sec("S1", 1.0, S_steep, 0.01)
+        sec2 = make_rect_sec("S2", 0.0, S_mild, 0.03)
+        sec3 = make_rect_sec("S3", -0.02, S_mild, 0.03)
+
+        line = ProfileLine(
+            name="jump_analytic",
+            sections=[sec1, sec2, sec3],
+            chainage=[0.0, 20.0, 40.0],
+            hydro1d_enabled=True,
+            hydro1d_regime="mixed"
+        )
+
+        from src.core.config import Config
+        cfg = Config()
+        cfg.compound_mode = False
+
+        levels, nodes = compute_hydro1d_profile(line, cfg, {}, warnings=[])
+
+        # upstream is supercritical
+        self.assertGreater(nodes[0].Fr, 1.0)
+        # downstream is subcritical
+        self.assertLess(nodes[2].Fr, 1.0)
+
+        # The depth at the jump should match conjugate depth relation
+        # In our case it jumps at sec2 or sec3, we just check the jump depth at the transition.
+        # Since sec2 will receive M_sup and M_sub, M_sup ≈ 52.21, M_sub ≈ 52.21
+        # Due to numerical precision M_sub could be slightly greater or smaller.
+
+        # 寻找水跃后的缓流断面：
+        jump_idx = -1
+        for i in range(1, 3):
+            if nodes[i].Fr < 1.0:
+                jump_idx = i
+                break
+
+        jump_depth = levels[jump_idx] - line.sections[jump_idx].z[1]  # z_bed is at index 1 and 2
+
+        # 相对误差 < 1e-3
+        self.assertAlmostEqual(jump_depth, h2_exact, delta=h2_exact*1e-3)
+
 if __name__ == "__main__":
     unittest.main()
