@@ -229,14 +229,23 @@ def project_to_dict(project: Project, cfg: Config,
     """把工程 + 配置拍成可直接 json.dump 的字典。"""
     lines = []
     for ln in project.profile_lines:
-        lines.append({
+        line_dict = {
             "name": ln.name,
             "order_source": ln.order_source,
             "chainage": _flist(ln.chainage),
             "profile_dist": _flist(ln.profile_dist),
             "profile": _profile_to_dict(ln.profile),
             "sections": [_section_to_dict(s) for s in ln.sections],
-        })
+        }
+        if hasattr(ln, "hydro_config") and ln.hydro_config is not None:
+            hc = ln.hydro_config
+            line_dict["hydro1d"] = {
+                "regime": hc.regime,
+                "boundary_kind": hc.boundary_kind,
+                "boundary_value": hc.boundary_value,
+                "q_override": hc.q_override
+            }
+        lines.append(line_dict)
 
     return {
         "format": FORMAT_ID,
@@ -265,17 +274,32 @@ def dict_to_project(data: dict) -> tuple[Project, Config, dict]:
                          f"{FORMAT_VERSION}，请升级程序后再打开")
 
     lines: list[ProfileLine] = []
+    from src.core.model import HydroConfig
+
     for ld in data.get("profile_lines") or []:
         secs = [_section_from_dict(s) for s in (ld.get("sections") or [])]
 
-        lines.append(ProfileLine(
+        line = ProfileLine(
             name=ld.get("name", ""),
             sections=secs,
             chainage=_flist_back(ld.get("chainage")),
             order_source=ld.get("order_source", "file"),
             profile=_profile_from_dict(ld.get("profile")),
             profile_dist=_flist_back(ld.get("profile_dist")),
-        ))
+        )
+
+        hc = ld.get("hydro1d")
+        if hc is not None:
+            line.hydro_config = HydroConfig(
+                regime=hc.get("regime", "subcritical"),
+                boundary_kind=hc.get("boundary_kind", "normal"),
+                boundary_value=hc.get("boundary_value", float("nan")),
+                q_override=hc.get("q_override")
+            )
+        else:
+            line.hydro_config = HydroConfig()
+
+        lines.append(line)
 
     # strict=False：容忍「更新版本写出、本版本不认识的字段」，
     # 这样旧程序打开新文件不会因为多了个设置项就整份打不开。

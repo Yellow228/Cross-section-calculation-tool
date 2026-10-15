@@ -135,6 +135,10 @@ class MainWindow(QMainWindow):
         self.dlg_settings = SettingsDialog(self.cfg, self)
         self.dlg_batch = BatchDialog(self)
         self.dlg_slope = SlopeDialog(self)
+
+        from .hydro1d_dialog import Hydro1DDialog
+        self.dlg_hydro1d = None
+
         self.dlg_settings.changed.connect(self._on_settings_changed)
         self.dlg_settings.thresholdsChanged.connect(self._on_thresholds_changed)
         self.dlg_settings.exportChanged.connect(self._on_export_settings_changed)
@@ -193,6 +197,9 @@ class MainWindow(QMainWindow):
         act_slope = mb.addAction("按纵断面推算比降")
         act_slope.setToolTip("用纵断面实测数据推算各断面的河道平均比降（先出建议值再确认）")
         act_slope.triggered.connect(self._open_slope_dialog)
+        act_hydro = mb.addAction("一维水面线推算")
+        act_hydro.setToolTip("RASlite 引擎：一维水面线推算")
+        act_hydro.triggered.connect(self._open_hydro_dialog)
         act_zone = mb.addAction("分区调节")
         act_zone.setToolTip(
             "手动指定深泓点与分区边界。只能在断面形态图上拾取实测测点；"
@@ -913,6 +920,61 @@ class MainWindow(QMainWindow):
         self._set_dirty()
 
     # ---------------- 比降推算 ----------------
+    def _open_hydro_dialog(self):
+        if self.project is None:
+            QMessageBox.information(self, "提示", "请先载入数据。")
+            return
+
+        from .hydro1d_dialog import Hydro1DDialog
+        from src.core.model import HydroConfig
+
+        row = self.lst_lines.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "提示", "请先在左侧选择一条纵断面线。")
+            return
+
+        line = self.project.profile_lines[row]
+        if not hasattr(line, "hydro_config"):
+            line.hydro_config = HydroConfig()
+
+        if self.dlg_hydro1d is not None:
+            self.dlg_hydro1d.close()
+
+        self.dlg_hydro1d = Hydro1DDialog(self, line.hydro_config)
+        self.dlg_hydro1d.config_applied.connect(lambda cfg: self._on_hydro_applied(row, cfg))
+        self.dlg_hydro1d.show()
+
+    def _on_hydro_applied(self, line_idx: int, cfg):
+        if self.project is None:
+            return
+
+        line = self.project.profile_lines[line_idx]
+        line.hydro_config = cfg
+        self._dirty = True
+
+        from src.core.hydro1d import compute_line_profile
+        try:
+            res_list, warns = compute_line_profile(line, self.cfg, cfg)
+        except Exception as e:
+            QMessageBox.warning(self, "推算失败", f"一维水面线推算发生错误:\n{e}")
+            return
+
+        # 结果存入 main_window 状态中供视图使用
+        if not hasattr(self, "hydro_results"):
+            self.hydro_results = {}
+        self.hydro_results[line.name] = res_list
+
+        if warns:
+            QMessageBox.information(self, "推算完成（含告警）", "\n".join(warns))
+        else:
+            self.statusBar().showMessage(f"纵断面 {line.name} 一维水面线推算完成", 3000)
+
+        self.view_profile.set_data(
+            self.project, self.results, self.infos,
+            line_index=max(self.lst_lines.currentRow(), 0),
+            hydro_results=self.hydro_results
+        )
+
     def _open_slope_dialog(self):
         """打开比降推算面板。先把当前工程喂进去再弹，否则表是空的。"""
         if self.project is None:
@@ -1318,8 +1380,11 @@ class MainWindow(QMainWindow):
             self.view_rating.set_data(ordered, sec.name)
         else:
             self.view_rating.set_data(ordered, None)
-        self.view_profile.set_data(self.project, self.results, self.infos,
-                                   line_index=max(self.lst_lines.currentRow(), 0))
+        self.view_profile.set_data(
+            self.project, self.results, self.infos,
+            line_index=max(self.lst_lines.currentRow(), 0),
+            hydro_results=getattr(self, "hydro_results", None)
+        )
         # 两个手动调节面板也要跟着走，否则会出现"面板显示的是别的断面"
         self._refresh_manual_panels()
 

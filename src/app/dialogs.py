@@ -50,6 +50,7 @@ class ExportOptionsDialog(QDialog):
             'inundation': QCheckBox("淹没线坐标输出结果.csv (原MATLAB混合版)"),
             'endpoint': QCheckBox("断面起终点坐标及水位.csv"),
             'range_raised': QCheckBox("设计水位加高淹没范围坐标.csv"),
+            'hydro1d': QCheckBox("一维水面线要素表.csv (RASlite 推算)"),
         }
 
         # 默认只勾选用户要求的三项
