@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Optional
 
 
 def argmin_index(values: list[float]) -> int:
@@ -119,10 +119,6 @@ class Section:
     # 界面上无法还原、也无法再拾取回来的状态。
     disaster_idx_manual: Optional[int] = None
 
-    # ---- 手动局部水头损失系数（收缩/扩张）----
-    hydro_loss_contraction: Optional[float] = None  # 收缩系数 Cc，默认0.1
-    hydro_loss_expansion: Optional[float] = None    # 扩张系数 Ce，默认0.3
-
     @property
     def n_points(self) -> int:
         return len(self.z)
@@ -187,9 +183,7 @@ class Section:
     def has_manual(self) -> bool:
         """是否有任何人工覆盖。用于界面上标「手动」与工程文件瘦身。"""
         return (self.thalweg_manual is not None or self.zone_manual
-                or self.disaster_idx_manual is not None
-                or self.hydro_loss_contraction is not None
-                or self.hydro_loss_expansion is not None)
+                or self.disaster_idx_manual is not None)
 
     def validate(self, check_params: bool = True) -> list[str]:
         """返回问题描述列表；空列表表示通过。对应缺陷 D6。
@@ -323,12 +317,6 @@ class ProfileLine:
     # 由空间相交分组时算出。chainage 是重定基后的桩号，两者坐标系不同：
     # 算比降要用原始起点距（slope.py），显示桩号用 chainage。
     profile_dist: list[float] = field(default_factory=list)
-
-    # 一维水动力模拟配置与结果
-    hydro1d_enabled: bool = False
-    hydro1d_regime: str = "subcritical"  # 'subcritical', 'supercritical', 'mixed', 'auto'
-    hydro1d_levels: list[float] = field(default_factory=list)  # 与 sections 等长的推算水位结果
-    hydro1d_nodes: list[Any] = field(default_factory=list)     # 与 sections 等长的详细水力计算节点状态 (HydroNode)
 
 
 @dataclass

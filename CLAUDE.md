@@ -111,8 +111,8 @@ Q1~Q15 的用户决策记录、以及重写中自引入缺陷（M1~M5）的复�
 **改完至少跑三层**：单测（不受界面影响）→ 界面冒烟（模拟真实点击与 Excel 粘贴）
 → 打包后自检（在 frozen 环境里把整条链路再跑一遍）。
 
-- 单测共 **212 个用例**，分两类（别笼统说"纯标准库可跑"）：
-  - **204 个纯标准库**，不需要装任何依赖，系统 Python 直接就能跑
+- 单测共 **195 个用例**，分两类（别笼统说"纯标准库可跑"）：
+  - **187 个纯标准库**，不需要装任何依赖，系统 Python 直接就能跑
   - **8 个需要 openpyxl**，又分两组：
     - **4 个读 `data\` / `samples\` 的回归测试**（`test_real_data_roundtrip`、
       `test_thalweg_index_matches_terrain`、`test_real_data_roundtrip_with_overrides`、

@@ -14,7 +14,7 @@ from PySide6.QtWidgets import QVBoxLayout, QWidget
 from core.model import Project, SectionResult, TerrainInfo
 
 from .canvas_base import (COLOR_BED, COLOR_DESIGN, COLOR_DISASTER, COLOR_PLUS,
-                          COLOR_HYDRO1D, PlotPanel)
+                          PlotPanel)
 
 
 class ProfileView(QWidget):
@@ -75,8 +75,7 @@ class ProfileView(QWidget):
                             color="#D3D1C7", alpha=0.35, zorder=1)
 
         # 各横断面处的水位
-        chs, hs, h1s, dz, names, hydro1d_zs = [], [], [], [], [], []
-        hydro1d = getattr(line, "hydro1d_levels", None)
+        chs, hs, h1s, dz, names = [], [], [], [], []
         for i, (sec, c) in enumerate(zip(line.sections, line.chainage or [])):
             res = self.results.get(sec.name)
             info = self.infos.get(sec.name)
@@ -87,10 +86,6 @@ class ProfileView(QWidget):
             h1s.append(res.design_level_plus)
             dz.append(info.disaster_level)
             names.append(sec.name)
-            if hydro1d and i < len(hydro1d):
-                hydro1d_zs.append(hydro1d[i])
-            else:
-                hydro1d_zs.append(float('nan'))
 
         if chs:
             o = np.argsort(np.asarray(chs, dtype=float))
@@ -108,13 +103,6 @@ class ProfileView(QWidget):
                         ls="-.", marker="s", ms=4, zorder=4, label=lab)
             ax.plot(xs, np.asarray(dz, dtype=float)[o], color=COLOR_DISASTER, lw=1.4,
                     ls=":", marker="*", ms=8, zorder=4, label="成灾水位")
-
-            # 一维推算水面线
-            if getattr(line, "hydro1d_enabled", False):
-                h1d_arr = np.asarray(hydro1d_zs, dtype=float)[o]
-                if np.isfinite(h1d_arr).any():
-                    ax.plot(xs, h1d_arr, color=COLOR_HYDRO1D, lw=1.5,
-                            ls="--", marker="v", ms=5, zorder=4, label="一维推算水面线")
 
             for x, y, nm in zip(xs, np.asarray(hs, dtype=float)[o],
                                 np.asarray(names, dtype=object)[o]):

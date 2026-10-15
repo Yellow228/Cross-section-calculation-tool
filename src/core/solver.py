@@ -13,7 +13,6 @@ from .interp import find_water_edge, interp1_linear_extrap, interpolate_xy
 from .model import ProfileLine, Section, SectionResult, TerrainInfo
 from .rating import check_monotonic, compute_rating_curve
 from .terrain import analyze_terrain
-from .hydro1d import compute_hydro1d_profile
 
 
 def solve_section(sec: Section, cfg: Config) -> tuple[SectionResult, TerrainInfo]:
@@ -72,21 +71,6 @@ def solve_section(sec: Section, cfg: Config) -> tuple[SectionResult, TerrainInfo
         sec, cfg, z, result.design_level, info.dmin_idx, "right", info.ymax_idx)
 
     return result, info
-
-
-def solve_profile_line(line: ProfileLine, cfg: Config, results: dict,
-                       warnings: Optional[list[str]] = None) -> None:
-    """求解整个纵断面线的一维水动力推算。
-
-    warnings：出参。一维推算的二分求根贴边/不收敛会写进这里——
-    那些情况原本是**静默**返回一个不可信的水位，界面上完全看不出来。
-    """
-    if line.hydro1d_enabled:
-        line.hydro1d_levels, line.hydro1d_nodes = compute_hydro1d_profile(line, cfg, results,
-                                                                          warnings=warnings)
-    else:
-        line.hydro1d_levels = [float('nan')] * len(line.sections)
-        line.hydro1d_nodes = [None] * len(line.sections)
 
 
 def _edge_point(sec: Section, cfg: Config, z: list[float], H: float,

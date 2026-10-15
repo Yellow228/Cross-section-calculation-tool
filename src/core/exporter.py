@@ -185,99 +185,6 @@ def export_endpoint_csv(path: str, sections: list[Section],
                     f'{matlab_num2str(res.design_level)}\n')
 
 
-def export_hydro1d_csv(path: str, line: ProfileLine, results: list[SectionResult], encoding: str = "utf-8-sig") -> None:
-    """一维推算水面线结果 CSV（仅对启用的线导出）。"""
-    with open(path, "w", encoding=encoding, newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["断面名称", "桩号(m)", "一维推算水位(m)", "设计流量(m3/s)", "推算流态"])
-
-        hs = getattr(line, "hydro1d_levels", [])
-        for i, sec in enumerate(line.sections):
-            c = line.chainage[i] if line.chainage and i < len(line.chainage) else sec.s[0]
-            h = hs[i] if i < len(hs) else float('nan')
-            h_str = "" if (h != h) else f"{h:.6f}"
-            q = sec.params.design_q
-            w.writerow([sec.name, f"{c:.3f}", h_str, f"{q:.3f}", line.hydro1d_regime])
-
-
-def export_hydro1d_range_csv(path: str, line: ProfileLine, cfg: Config) -> None:
-    """一维推算水面线淹没范围坐标 CSV（同淹没线坐标格式）。"""
-    with open(path, "w", encoding=cfg.csv_encoding, newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["名称", "平面坐标X", "平面坐标Y", "图标样式"])
-        hs = getattr(line, "hydro1d_levels", [])
-        for i, sec in enumerate(line.sections):
-            h = hs[i] if i < len(hs) else float('nan')
-            if h != h:
-                continue
-
-            z = sec.z
-            dmin_idx = sec.thalweg_index()
-
-            # 左岸
-            edge_l = find_water_edge(z, h, dmin_idx, "left")
-            if edge_l:
-                i1, i2 = edge_l
-                px, py = interpolate_xy(sec.x, sec.y, z, i1, i2, h)
-                ox, oy = out_xy(px, py, cfg.export_coord_system)
-                w.writerow([f"{sec.name}Z", f"{ox:.6f}", f"{oy:.6f}", cfg.ICON_FOUND])
-
-            # 右岸
-            edge_r = find_water_edge(z, h, dmin_idx, "right")
-            if edge_r:
-                i1, i2 = edge_r
-                px, py = interpolate_xy(sec.x, sec.y, z, i1, i2, h)
-                ox, oy = out_xy(px, py, cfg.export_coord_system)
-                w.writerow([f"{sec.name}Y", f"{ox:.6f}", f"{oy:.6f}", cfg.ICON_FOUND])
-
-
-def export_hydro1d_table_csv(path: str, line: ProfileLine, encoding: str = "utf-8-sig") -> None:
-    """一维推算水力要素表 CSV (HEC-RAS Profile Output Table format)."""
-    with open(path, "w", encoding=encoding, newline="") as f:
-        w = csv.writer(f)
-        w.writerow([
-            "断面名称/里程桩号 (Station / River Station)",
-            "计算水位 (Water Surface Elevation, Z)",
-            "临界水深/水位 (Critical Water Surface, Z_crit)",
-            "总流量 (Flow, Q)",
-            "总过水断面积 (Area, A)",
-            "平均流速 (Velocity, V)",
-            "动能修正系数 (Velocity Weighting Coefficient, alpha)",
-            "摩阻坡降 (Friction Slope, S_f)",
-            "段间水头损失 (Head Loss, h_l)",
-            "弗鲁德数 (Froude Number, Fr)"
-        ])
-
-        nodes = getattr(line, "hydro1d_nodes", [])
-
-        def safe_fmt(val):
-            if val is None or val != val: # None or NaN
-                return ""
-            return f"{val:.6f}"
-
-        for i, sec in enumerate(line.sections):
-            c = line.chainage[i] if line.chainage and i < len(line.chainage) else sec.s[0]
-            name_station = f"{sec.name} / {c:.3f}"
-
-            node = nodes[i] if i < len(nodes) else None
-            if not node:
-                w.writerow([name_station, "", "", "", "", "", "", "", "", ""])
-                continue
-
-            w.writerow([
-                name_station,
-                safe_fmt(node.Z),
-                safe_fmt(node.Z_crit),
-                safe_fmt(node.Q),
-                safe_fmt(node.A),
-                safe_fmt(node.V),
-                safe_fmt(node.alpha),
-                safe_fmt(node.Sf),
-                safe_fmt(node.hl),
-                safe_fmt(node.Fr)
-            ])
-
-
 def export_section_names_xlsx(path: str, names: list[str]) -> None:
     """断面编号参考 xlsx（对应原 xlswrite(..., 'A2')）。需要 openpyxl。"""
     try:
@@ -308,9 +215,6 @@ def export_all(project: Project,
       'range_raised': 设计水位加高淹没范围坐标.csv
       'range_design': 设计水位淹没范围坐标.csv
       'disaster': 成灾水位坐标.csv
-      'hydro1d': 一维推算水面线.csv
-      'hydro1d_range': 一维推算水面线淹没范围坐标.csv
-      'hydro1d_table': 一维推算水力要素表.csv
 
     如果 options 为 None，默认全部导出（如果 cfg 及 line 允许的话）。
     """
@@ -320,8 +224,7 @@ def export_all(project: Project,
     if options is None:
         options = {
             'inundation': True, 'rating': True, 'endpoint': True,
-            'range_raised': True, 'range_design': True, 'disaster': True,
-            'hydro1d': True, 'hydro1d_range': True, 'hydro1d_table': True
+            'range_raised': True, 'range_design': True, 'disaster': True
         }
 
     for line in project.profile_lines:
@@ -362,20 +265,5 @@ def export_all(project: Project,
             p6 = os.path.join(line_dir, f"{line.name}成灾水位坐标.csv")
             export_disaster_csv(p6, secs, res_list, info_list, cfg)
             written.append(p6)
-
-        # 导出开启了一维水面线推算的组
-        if getattr(line, "hydro1d_enabled", False):
-            if options.get('hydro1d', True):
-                p7 = os.path.join(line_dir, f"{line.name}一维推算水面线.csv")
-                export_hydro1d_csv(p7, line, res_list, cfg.csv_encoding)
-                written.append(p7)
-            if options.get('hydro1d_range', True):
-                p8 = os.path.join(line_dir, f"{line.name}一维推算水面线淹没范围坐标.csv")
-                export_hydro1d_range_csv(p8, line, cfg)
-                written.append(p8)
-            if options.get('hydro1d_table', True):
-                p9 = os.path.join(line_dir, f"{line.name}一维推算水力要素表.csv")
-                export_hydro1d_table_csv(p9, line, cfg.csv_encoding)
-                written.append(p9)
 
     return written

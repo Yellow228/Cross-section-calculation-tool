@@ -22,8 +22,6 @@ from core.model import Section, SectionParams, SectionResult, TerrainInfo
 from core.rating import compute_rating_curve, hvec_row_counts, matlab_colon
 from core.solver import solve_section
 from core.terrain import analyze_terrain
-from core.hydro1d import (_bisect_detail, compute_hydro1d_profile,
-                         get_node_state)
 from core.chainage import chainage_at_distance, compute_chainage, rebase_chainage
 from core.model import ProfileData, ProfileLine, Project
 from core.reader import (_dedupe_names, blocks_to_sections, classify,
@@ -867,9 +865,9 @@ class TestDedupeSectionNames(unittest.TestCase):
     """重名横断面必须在分组前自动改名（`reader._dedupe_section_names`）。
 
     为什么这事很严重：`MainWindow.results` / `infos` 都是 `{断面名: 结果}`，
-    `exporter.export_all`、`hydro1d.compute_hydro1d_profile` 也一律按名字取。
+    `exporter.export_all` 也一律按名字取。
     两个同名断面会让**后载入的静默覆盖先载入的**——导出 CSV 里两个断面的
-    水位/流量来自同一份结果、一维推算取到错的设计水位，全程不报错，
+    水位/流量来自同一份结果，全程不报错，
     图上还看不出来（两条线各画各的，只是数值同源）。
     纵断面线名早就有 `_dedupe_names`，断面名一直没有，这里补上那一半。
 
@@ -1360,8 +1358,7 @@ class TestParamsCsvRoundtrip(unittest.TestCase):
     `main_window._export_params_csv` / `_import_params_csv` 里。之所以要在
     这里守着，是因为这两条规则踩过一次：
       * 导出列取「主槽优先」而非「统一优先」——否则分区糙率回灌时会被冲掉；
-      * 解析失败必须**跳过该字段并保留原值**，不能静默写 NaN
-        （设计流量一旦成 NaN，`hydro1d` 会悄悄用 50.0 顶替）。
+      * 解析失败必须**跳过该字段并保留原值**，不能静默写 NaN。
     """
 
     def _export_cell(self, p: SectionParams) -> str:
@@ -1472,7 +1469,7 @@ class TestParamsCsvRoundtrip(unittest.TestCase):
         self.assertFalse(p.roughness_main != p.roughness_main)   # 不是 NaN
 
     def test_invalid_design_q_reports_and_keeps_old(self):
-        """设计流量非法时必须报出来——写成 NaN 会让 hydro1d 悄悄用 50.0。"""
+        """设计流量非法时必须报出来，不能静默写成 NaN。"""
         v, ok = self._parse_cell("120 m3/s")
         self.assertFalse(ok)
         self.assertIsNone(v)
@@ -2822,283 +2819,7 @@ class TestSectionEdit(unittest.TestCase):
         self.assertEqual(sec.y, oy)
 
 
-class TestZoneConductance(unittest.TestCase):
-    """`hydro1d` 的流量模数 K 必须**按分区**算，且与 H~Q 曲线同口径。
-
-    为什么必须一致：K 就是曼宁公式里的输水能力 `A·R^(2/3)/n`，
-    H~Q 曲线（`rating.py`）用的是**分区曼宁**，而一维推算的摩阻比降
-    `Sf = (Q/K)²` 若改用**统一糙率**的 K，同一个断面就有了两套糙率模型：
-    糙率差多少，Sf 就差平方倍（K 差 50% -> Sf 差 4 倍），
-    推算出来的水面线整体失真——而界面上完全看不出来。
-
-    ⚠ 另一条同样重要：K 必须**无条件**按分区算，不能挂在
-      `cfg.kinetic_alpha_auto` 这个开关下面。那个开关只管"要不要算动能
-      修正系数 alpha"，跟"用哪套糙率"是两件事；挂上去会让用户关掉自动
-      alpha 时，K 悄悄退回统一糙率，两条链路又重新不一致了。
-    """
-
-    @staticmethod
-    def _sec(name: str, roughness: float, zone: tuple | None = None) -> Section:
-        s = [0.0, 20.0, 25.0, 30.0, 40.0, 45.0, 65.0]
-        z = [102.0, 102.5, 98.0, 97.0, 98.0, 102.5, 102.8]
-        p = SectionParams(name=name, slope=0.005, roughness=roughness, design_q=50.0)
-        if zone is not None:
-            p.roughness_left, p.roughness_main, p.roughness_right = zone
-        return Section(name=name, x=[float(i) for i in range(7)],
-                       y=[float(i) for i in range(7)], s=s, z=z, params=p)
-
-    def _cfg(self, compound: bool = True, auto_alpha: bool = True) -> Config:
-        cfg = Config()
-        cfg.compound_mode = compound
-        cfg.kinetic_alpha_auto = auto_alpha
-        return cfg
-
-    def test_uniform_roughness_keeps_old_formula(self):
-        """只填统一糙率时，K 必须与旧公式 `A·R^(2/3)/n` **逐位相同**。
-
-        这是向后兼容的底线：绝大多数工程只填一个糙率，
-        它们的结果一个数都不能变。
-        """
-        cfg = self._cfg()
-        sec = self._sec("U", 0.03)
-        for level in (97.5, 99.0, 100.5, 102.0):
-            node = get_node_state(sec, level, 50.0, 0.0, cfg)
-            expected = node.A * (node.R ** (2 / 3)) / 0.03
-            self.assertAlmostEqual(node.K, expected, places=9,
-                                   msg=f"水位 {level} 处 K 与旧公式不一致")
-
-    def test_zonal_k_matches_rating_loop(self):
-        """分区糙率下，K 必须与 `rating.py` 同款的分区累加口径完全一致。
-
-        用与 `rating.py` 相同的写法（**直接遍历 `info.zones`，含重叠区间**）
-        独立算一遍，两边必须相等——口径一旦分叉这里就会红。
-        """
-        cfg = self._cfg()
-        sec = self._sec("Z", 0.03, zone=(0.025, 0.060, 0.025))
-        info = analyze_terrain(sec, cfg)
-
-        for level in (97.5, 99.0, 100.5, 102.0):
-            node = get_node_state(sec, level, 50.0, 0.0, cfg, info)
-
-            k_ref = 0.0
-            nz = len(info.zones)
-            for iz, (a, b) in enumerate(info.zones):
-                if b - a < 2:
-                    continue
-                A_i, P_i, _B_i = section_geom(sec.s[a:b], sec.z[a:b], level)
-                if A_i <= 1e-6 or P_i <= 1e-6:
-                    continue
-                R_i = A_i / P_i
-                n_i = sec.params.roughness_for_zone(iz, nz)
-                if not n_i or math.isnan(n_i):
-                    n_i = 0.03
-                k_ref += A_i * (R_i ** (2 / 3)) / n_i
-
-            self.assertAlmostEqual(node.K, k_ref, places=9,
-                                   msg=f"水位 {level} 处分区 K 与 rating 口径不一致")
-
-    def test_zonal_k_differs_from_uniform(self):
-        """分区糙率与统一糙率差异明显时，K 必须体现出来（否则等于没改）。
-
-        主槽 0.060 / 滩地 0.025 vs 统一 0.030：两者必须显著不同。
-        """
-        cfg = self._cfg()
-        sec_z = self._sec("Z", 0.03, zone=(0.025, 0.060, 0.025))
-        sec_u = self._sec("U", 0.03)
-
-        nz = get_node_state(sec_z, 100.0, 50.0, 0.0, cfg)
-        nu = get_node_state(sec_u, 100.0, 50.0, 0.0, cfg)
-        self.assertNotAlmostEqual(nz.K, nu.K, places=3)
-
-    def test_k_is_zonal_even_when_auto_alpha_off(self):
-        """`kinetic_alpha_auto=False` 只该关掉 alpha，**不该**改回统一糙率。
-
-        这是把 K 从开关里解耦出来的核心断言：关掉自动 alpha 后，
-        K 仍必须等于按分区算的口径。
-
-        ⚠ 取水位 102.5（漫过左右滩地，三个分区同时过水）——只有此时
-          分区 alpha 才会明显偏离 1.0。低水位下只有主槽过水，
-          `sum(K³/A²) / (K_tot³/A_tot²)` 会退化成恰好 1.0，断言就失效了。
-        """
-        zone = (0.025, 0.060, 0.025)
-        sec = self._sec("Z", 0.03, zone=zone)
-        LEVEL = 102.5          # 漫滩水位：三区同时过水
-
-        k_on = get_node_state(sec, LEVEL, 50.0, 0.0,
-                              self._cfg(auto_alpha=True)).K
-        k_off = get_node_state(sec, LEVEL, 50.0, 0.0,
-                               self._cfg(auto_alpha=False)).K
-        self.assertAlmostEqual(k_on, k_off, places=9)
-
-        # 而 alpha 本身确实被开关影响（说明这个开关没被架空）
-        a_on = get_node_state(sec, LEVEL, 50.0, 0.0,
-                              self._cfg(auto_alpha=True)).alpha
-        a_off = get_node_state(sec, LEVEL, 50.0, 0.0,
-                               self._cfg(auto_alpha=False)).alpha
-        self.assertEqual(a_off, 1.0)
-        self.assertNotAlmostEqual(a_on, a_off, places=6,
-                                  msg="自动 alpha 没有产生偏离 1.0 的值，"
-                                      "该断面/水位不足以验证开关未被架空")
-
-    def test_sf_follows_K(self):
-        """`Sf = (Q/K)²` 必须真的读 K，而不是另算一遍统一糙率。"""
-        cfg = self._cfg()
-        sec = self._sec("Z", 0.03, zone=(0.025, 0.060, 0.025))
-        node = get_node_state(sec, 100.0, 50.0, 0.0, cfg)
-        self.assertAlmostEqual(node.Sf, (50.0 / node.K) ** 2, places=12)
-
-
-class TestBisectDiagnostics(unittest.TestCase):
-    """一维推算的二分求根必须能报出"贴边假解"和"不收敛"。
-
-    背景：搜索区间是**写死**的 `[min(z)+0.01, max(z)+10]`。下游水位很高、
-    回水上溯超过 `max(z)+10` 时真解落在区间外，二分只会一路贴到边界，
-    把边界附近的**假解**当答案返回——不报错、不警告，用户拿到一个
-    平白低十几米的水位，还以为是算出来的。
-
-    ⚠ 判据不能写成"看解距离边界多远"：二分只要没提前收敛，区间宽度就会被
-      压到 <= tol 才退出，此时解距离原边界**恰好还有约 tol/2**
-      （mid 永远取区间中点），任何 tol 量级的绝对容差都测不出贴边。
-      正确判据是：**区间耗尽（宽度 <= tol）且残差未收敛**。
-    """
-
-    def test_converged_root_inside_bracket(self):
-        """区间内有解：converged=True，且**不能**被误报成贴边。"""
-        x, d = _bisect_detail(97.01, 112.80, lambda z: z - 103.0, 1e-4,
-                              rising=True)
-        self.assertTrue(d["converged"])
-        self.assertFalse(d["clipped"])
-        self.assertAlmostEqual(x, 103.0, places=3)
-
-    def test_root_far_outside_upper_bound_is_flagged(self):
-        """真解远在上界之外：区间耗尽且不收敛 -> 必须标记贴边。
-
-        这条是 P3 的核心回归：老代码在这里静默返回 ~112.80（上界）。
-        """
-        x, d = _bisect_detail(97.01, 112.80, lambda z: z - 125.0, 1e-4,
-                              rising=True)
-        self.assertFalse(d["converged"])
-        self.assertTrue(d["clipped"])
-        self.assertTrue(d["at_upper"])
-        # 解确实被挤到了上界附近
-        self.assertLess(abs(x - 112.80), 1e-3)
-
-    def test_root_far_below_lower_bound_is_flagged(self):
-        """真解远在下界之外：同样必须标记贴边。"""
-        x, d = _bisect_detail(97.01, 112.80, lambda z: z - 90.0, 1e-4,
-                              rising=True)
-        self.assertFalse(d["converged"])
-        self.assertTrue(d["clipped"])
-        self.assertTrue(d["at_lower"])
-        self.assertLess(abs(x - 97.01), 1e-3)
-
-    def test_constant_residual_is_flagged(self):
-        """残差恒定不变（符号永不翻转）：区间耗尽，必须标记贴边。"""
-        _x, d = _bisect_detail(97.01, 112.80, lambda z: -8.2, 1e-4,
-                               rising=True)
-        self.assertFalse(d["converged"])
-        self.assertTrue(d["clipped"])
-        self.assertAlmostEqual(d["residual"], -8.2, places=9)
-
-    def test_near_boundary_but_converged_is_not_clipped(self):
-        """真解靠近边界但**确实收敛**时，不许误报贴边。
-
-        这是最容易矫枉过正的一处：真解离上界只有 0.3 m 是合法结果，
-        把它报成"不可信"会让用户对正常结果失去信任。
-        """
-        x, d = _bisect_detail(97.01, 112.80, lambda z: z - 112.5, 1e-4,
-                              rising=True)
-        self.assertTrue(d["converged"])
-        self.assertFalse(d["clipped"])
-        self.assertAlmostEqual(x, 112.5, places=3)
-
-    def test_bisect_matches_original_loop_numerically(self):
-        """重构后的 `_bisect_detail` 与重构前的循环**数值逐位相同**。
-
-        必须成立：这次改动只该"加诊断"，不该动任何计算结果。
-        任一场景出现偏差就说明改错了。
-        """
-        def original(low, high, f, tol, rising=True):
-            for _ in range(50):
-                mid = (low + high) / 2
-                diff = f(mid)
-                if abs(diff) < tol or (high - low) < tol:
-                    return mid
-                if (diff > 0) == rising:
-                    high = mid
-                else:
-                    low = mid
-            return (low + high) / 2
-
-        cases = [
-            ("root inside", lambda z: z - 103.0),
-            ("root above", lambda z: z - 125.0),
-            ("root below", lambda z: z - 90.0),
-            ("constant", lambda z: -8.2),
-            ("nonlinear", lambda z: math.exp((z - 103.0) / 5.0) - 1.0),
-        ]
-        for tag, f in cases:
-            with self.subTest(case=tag):
-                self.assertEqual(original(97.01, 112.80, f, 1e-4),
-                                 _bisect_detail(97.01, 112.80, f, 1e-4,
-                                                rising=True)[0],
-                                 f"{tag} 的数值结果被改动")
-
-    def test_profile_reports_clipped_section(self):
-        """整条纵断面线跑完，`warnings` 出参必须把贴边断面报出来。
-
-        这是"诊断通道"的端到端断言：单点的 diag 对不对是一回事，
-        它有没有真的冒到用户眼前是另一回事——老代码整条链路根本没有告警口子。
-        """
-        cfg = Config()
-        cfg.compound_mode = True
-
-        def mk(name, z0, zmin):
-            s = [0.0, 10.0, 20.0]
-            z = [z0, zmin, z0 + 0.2]
-            p = SectionParams(name=name, slope=0.005, roughness=0.03,
-                              design_q=50.0)
-            return Section(name=name, x=[0.0, 10.0, 20.0], y=[0.0, 10.0, 20.0],
-                           s=s, z=z, params=p)
-
-        # 下游水位 130 远超上游断面的 max(z)+10，真解在区间外
-        down = mk("DOWN", 100.0, 99.0)
-        up = mk("UP", 100.0, 99.0)
-        res_down = SectionResult(design_level=130.0)
-
-        line = ProfileLine(name="L", sections=[down, up],
-                           chainage=[0.0, 1.0])
-        warnings: list[str] = []
-        _levels = compute_hydro1d_profile(
-            line, cfg, results={"DOWN": res_down}, warnings=warnings)
-
-        self.assertTrue(warnings, "贴边断面没有产生任何告警——诊断通道断了")
-        self.assertTrue(any("未收敛" in w or "贴边" in w for w in warnings), warnings)
-
-    def test_profile_no_warning_for_healthy_run(self):
-        """正常能收敛的工况**不许**产生告警（否则告警会被用户忽略）。"""
-        cfg = Config()
-        cfg.compound_mode = True
-
-        def mk(name, zmin):
-            s = [0.0, 10.0, 20.0]
-            z = [100.0, zmin, 100.2]
-            p = SectionParams(name=name, slope=0.005, roughness=0.03,
-                              design_q=50.0)
-            return Section(name=name, x=[0.0, 10.0, 20.0], y=[0.0, 10.0, 20.0],
-                           s=s, z=z, params=p)
-
-        down = mk("DOWN", 99.0)
-        up = mk("UP", 99.0)
-        res_down = SectionResult(design_level=100.0)
-
-        line = ProfileLine(name="L", sections=[down, up],
-                           chainage=[0.0, 1.0])
-        warnings: list[str] = []
-        compute_hydro1d_profile(line, cfg,
-                                results={"DOWN": res_down}, warnings=warnings)
-        self.assertFalse(any("未收敛" in w or "贴边" in w or "流态转换" in w for w in warnings), f"正常工况不该有告警：{warnings}")
-
-
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
