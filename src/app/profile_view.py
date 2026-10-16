@@ -37,10 +37,12 @@ class ProfileView(QWidget):
     def set_data(self, project: Project | None,
                  results: dict[str, SectionResult],
                  infos: dict[str, TerrainInfo],
-                 line_index: int | None = None):
+                 line_index: int | None = None,
+                 hydro_results: dict | None = None):
         self.project = project
         self.results = results
         self.infos = infos
+        self.hydro_results = hydro_results or {}
         if line_index is not None:
             self.line_index = line_index
         self.refresh()
@@ -76,6 +78,9 @@ class ProfileView(QWidget):
 
         # 各横断面处的水位
         chs, hs, h1s, dz, names = [], [], [], [], []
+        hydro_chs, hydro_ws = [], []
+        hydro_res_list = getattr(self, "hydro_results", {}).get(line.name, [])
+
         for i, (sec, c) in enumerate(zip(line.sections, line.chainage or [])):
             res = self.results.get(sec.name)
             info = self.infos.get(sec.name)
@@ -86,6 +91,10 @@ class ProfileView(QWidget):
             h1s.append(res.design_level_plus)
             dz.append(info.disaster_level)
             names.append(sec.name)
+
+            if i < len(hydro_res_list) and hydro_res_list[i] is not None:
+                hydro_ws.append(hydro_res_list[i].ws)
+                hydro_chs.append(c)
 
         if chs:
             o = np.argsort(np.asarray(chs, dtype=float))
@@ -109,6 +118,18 @@ class ProfileView(QWidget):
                 ax.annotate(str(nm), (x, y), textcoords="offset points",
                             xytext=(0, 8), ha="center", fontsize=8.5,
                             color=COLOR_DESIGN)
+
+        if hydro_chs:
+            hydro_chs_arr = np.asarray(hydro_chs, dtype=float)
+            hydro_ws_arr = np.asarray(hydro_ws, dtype=float)
+
+            o = np.argsort(hydro_chs_arr)
+            hydro_chs_sorted = hydro_chs_arr[o]
+            hydro_ws_sorted = hydro_ws_arr[o]
+
+            # Using continuous plotting, matplotlib naturally breaks lines at np.nan
+            ax.plot(hydro_chs_sorted, hydro_ws_sorted, color="#00529B", lw=2.0,
+                    marker="d", ms=6, zorder=5, label="推算水面线 (RASlite)")
 
         ax.set_xlabel("里程 / 桩号 (m)")
         ax.set_ylabel("高程 (m)")

@@ -320,6 +320,31 @@ class ProfileLine:
 
 
 @dataclass
+class HydroConfig:
+    regime: str = "subcritical"          # subcritical / supercritical / mixed
+    boundary_kind: str = "normal"        # ws / critical / normal
+    boundary_value: float = float("nan") # ws 时为高程、normal 时为比降（NaN=用断面 slope）
+    q_override: Optional[float] = None   # 覆盖设计流量；None=用 design_q
+
+@dataclass
+class HydroResult:
+    name: str
+    chainage: float
+    ws: float
+    crit_ws: float = float("nan")
+    q: float = 0.0
+    area: float = 0.0
+    velocity: float = 0.0
+    froude: float = 0.0
+    alpha: float = 1.0
+    conveyance: float = 0.0
+    total_head: float = 0.0
+    top_width: float = 0.0
+    depth: float = 0.0
+    defaulted_critical: bool = False
+    warnings: list = field(default_factory=list)
+
+@dataclass
 class Project:
     profile_lines: list[ProfileLine] = field(default_factory=list)
 

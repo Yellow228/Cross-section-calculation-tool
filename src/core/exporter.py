@@ -27,7 +27,7 @@ import os
 from typing import Optional
 
 from .config import Config
-from .model import ProfileLine, Project, Section, SectionResult, TerrainInfo
+from .model import ProfileLine, Project, Section, SectionResult, TerrainInfo, HydroResult
 from .interp import interpolate_xy, find_water_edge
 
 
@@ -185,6 +185,53 @@ def export_endpoint_csv(path: str, sections: list[Section],
                     f'{matlab_num2str(res.design_level)}\n')
 
 
+def export_hydro_csv(path: str, results: list[HydroResult]):
+    """导出一维水面线推算结果表。
+
+    列名沿用老版一维水面线要素表：断面名/里程/计算水位/临界水位/流量/过水面积/平均流速/动能修正系数/弗鲁德数/摩阻坡降/水头损失...
+    NaN 写入为空字符串。
+    """
+    headers = [
+        "断面名", "里程 (m)", "计算水位 (m)", "临界水位 (m)",
+        "流量 (m³/s)", "过水面积 (m²)", "平均流速 (m/s)", "动能修正系数",
+        "弗鲁德数", "输水能力", "总水头 (m)", "水面宽 (m)", "水深 (m)", "告警"
+    ]
+
+    def fmt(v: float) -> str:
+        if v != v or v is None:
+            return ""
+        return f"{v:.4f}"
+
+    with open(path, "w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(headers)
+        for r in results:
+            warnings_str = "; ".join(r.warnings) if r.warnings else ""
+            if r.defaulted_critical:
+                if warnings_str:
+                    warnings_str = "Defaulted Critical; " + warnings_str
+                else:
+                    warnings_str = "Defaulted Critical"
+
+            row = [
+                r.name,
+                fmt(r.chainage),
+                fmt(r.ws),
+                fmt(r.crit_ws),
+                fmt(r.q),
+                fmt(r.area),
+                fmt(r.velocity),
+                fmt(r.alpha),
+                fmt(r.froude),
+                fmt(r.conveyance),
+                fmt(r.total_head),
+                fmt(r.top_width),
+                fmt(r.depth),
+                warnings_str
+            ]
+            writer.writerow(row)
+
+
 def export_section_names_xlsx(path: str, names: list[str]) -> None:
     """断面编号参考 xlsx（对应原 xlswrite(..., 'A2')）。需要 openpyxl。"""
     try:
@@ -265,5 +312,22 @@ def export_all(project: Project,
             p6 = os.path.join(line_dir, f"{line.name}成灾水位坐标.csv")
             export_disaster_csv(p6, secs, res_list, info_list, cfg)
             written.append(p6)
+
+        if options.get('hydro1d', True):
+            # Try to get hydro_results from the current line object, fallback gracefully
+            # During normal execution flow from main_window, results might be cached there,
+            # but since export_all only takes project and results, we must re-compute
+            # or pass it in. Re-computing on the fly for export is safest.
+            from .hydro1d import compute_line_profile
+            from .model import HydroConfig
+            try:
+                hydro_cfg = line.hydro_config if hasattr(line, "hydro_config") and line.hydro_config else HydroConfig()
+                hydro_res, _ = compute_line_profile(line, cfg, hydro_cfg)
+                if hydro_res:
+                    p7 = os.path.join(line_dir, f"{line.name}一维水面线要素表.csv")
+                    export_hydro_csv(p7, hydro_res)
+                    written.append(p7)
+            except Exception:
+                pass # If it fails to compute (e.g. no area), skip exporting for this line
 
     return written
