@@ -243,7 +243,9 @@ def project_to_dict(project: Project, cfg: Config,
                 "regime": hc.regime,
                 "boundary_kind": hc.boundary_kind,
                 "boundary_value": hc.boundary_value,
-                "q_override": hc.q_override
+                "q_override": hc.q_override,
+                "downstream_kind": hc.downstream_kind,
+                "downstream_name": hc.downstream_name,
             }
         lines.append(line_dict)
 
@@ -294,7 +296,9 @@ def dict_to_project(data: dict) -> tuple[Project, Config, dict]:
                 regime=hc.get("regime", "subcritical"),
                 boundary_kind=hc.get("boundary_kind", "normal"),
                 boundary_value=hc.get("boundary_value", float("nan")),
-                q_override=hc.get("q_override")
+                q_override=hc.get("q_override"),
+                downstream_kind=hc.get("downstream_kind", "lowest"),
+                downstream_name=hc.get("downstream_name")
             )
         else:
             line.hydro_config = HydroConfig()

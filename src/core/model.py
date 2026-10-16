@@ -329,6 +329,8 @@ class HydroConfig:
     boundary_kind: str = "normal"        # ws / critical / normal
     boundary_value: float = float("nan") # ws 时为高程、normal 时为比降（NaN=用断面 slope）
     q_override: Optional[float] = None   # 覆盖设计流量；None=用 design_q
+    downstream_kind: str = "lowest"      # lowest / first / last / name
+    downstream_name: Optional[str] = None  # kind=="name" 时生效
 
 @dataclass
 class HydroResult:
