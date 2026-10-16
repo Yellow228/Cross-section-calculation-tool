@@ -13,8 +13,8 @@ from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 from core.model import Project, SectionResult, TerrainInfo
 
-from .canvas_base import (COLOR_BED, COLOR_DESIGN, COLOR_DISASTER, COLOR_PLUS,
-                          PlotPanel)
+from .canvas_base import (COLOR_BED, COLOR_DESIGN, COLOR_DISASTER, COLOR_HYDRO1D,
+                          COLOR_PLUS, PlotPanel)
 
 
 class ProfileView(QWidget):
@@ -128,8 +128,8 @@ class ProfileView(QWidget):
             hydro_ws_sorted = hydro_ws_arr[o]
 
             # Using continuous plotting, matplotlib naturally breaks lines at np.nan
-            ax.plot(hydro_chs_sorted, hydro_ws_sorted, color="#00529B", lw=2.0,
-                    marker="d", ms=6, zorder=5, label="推算水面线 (RASlite)")
+            ax.plot(hydro_chs_sorted, hydro_ws_sorted, color=COLOR_HYDRO1D, lw=2.0,
+                    ls="--", marker="v", ms=6, zorder=5, label="推算水面线 (RASlite)")
 
         ax.set_xlabel("里程 / 桩号 (m)")
         ax.set_ylabel("高程 (m)")

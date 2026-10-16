@@ -136,8 +136,13 @@ class MainWindow(QMainWindow):
         self.dlg_batch = BatchDialog(self)
         self.dlg_slope = SlopeDialog(self)
 
+        # 一维水面线推算窗口：与手动调节面板同款——只构造一次，
+        # 由 set_project / set_current_line 推上下文，跟随左侧选中的线；
+        # 窗口内换组时主界面左侧也跟着切（复用手动面板的处理器）。
         from .hydro1d_dialog import Hydro1DDialog
-        self.dlg_hydro1d = None
+        self.dlg_hydro1d = Hydro1DDialog(self)
+        self.dlg_hydro1d.config_applied.connect(self._on_hydro_applied)
+        self.dlg_hydro1d.groupChanged.connect(self._on_manual_group_changed)
 
         self.dlg_settings.changed.connect(self._on_settings_changed)
         self.dlg_settings.thresholdsChanged.connect(self._on_thresholds_changed)
@@ -924,28 +929,21 @@ class MainWindow(QMainWindow):
         if self.project is None:
             QMessageBox.information(self, "提示", "请先载入数据。")
             return
-
-        from .hydro1d_dialog import Hydro1DDialog
-        from core.model import HydroConfig
-
-        row = self.lst_lines.currentRow()
-        if row < 0:
-            QMessageBox.information(self, "提示", "请先在左侧选择一条纵断面线。")
+        if not self.project.profile_lines:
+            QMessageBox.information(self, "提示", "工程里没有纵断面线。")
             return
 
-        line = self.project.profile_lines[row]
-        if line.hydro_config is None:
-            line.hydro_config = HydroConfig()
-
-        if self.dlg_hydro1d is not None:
-            self.dlg_hydro1d.close()
-
-        self.dlg_hydro1d = Hydro1DDialog(self, line.hydro_config)
-        self.dlg_hydro1d.config_applied.connect(lambda cfg: self._on_hydro_applied(row, cfg))
-        self.dlg_hydro1d.show()
+        # 窗口只构造一次（__init__ 里已连好信号），打开时推入工程与当前组。
+        # 线选择交给窗口顶部的下拉框（与「分区调节」同款交互），
+        # 左侧换线时由 _refresh_manual_panels 推着跟随。
+        self.dlg_hydro1d.set_project(self.project)
+        self.dlg_hydro1d.set_current_line(max(self.lst_lines.currentRow(), 0))
+        self.dlg_hydro1d.popup()
 
     def _on_hydro_applied(self, line_idx: int, cfg):
         if self.project is None:
+            return
+        if not (0 <= line_idx < len(self.project.profile_lines)):
             return
 
         line = self.project.profile_lines[line_idx]
@@ -969,11 +967,15 @@ class MainWindow(QMainWindow):
         else:
             self.statusBar().showMessage(f"纵断面 {line.name} 一维水面线推算完成", 3000)
 
-        self.view_profile.set_data(
-            self.project, self.results, self.infos,
-            line_index=max(self.lst_lines.currentRow(), 0),
-            hydro_results=self.hydro_results
-        )
+        # 左侧已在被推算的线上（窗口内换组时 groupChanged 已把左侧切过来，
+        # 这里只是防线；重复 setCurrentRow 同值不触发信号）。
+        if self.lst_lines.currentRow() != line_idx:
+            self.lst_lines.setCurrentRow(line_idx)
+
+        # 统一走 _refresh_current_views：它内部会带 hydro_results 刷纵剖面图，
+        # 同时把横断面图的"一维推算水面线"也刷到当前断面（只刷 view_profile
+        # 会漏掉横断面图）。
+        self._refresh_current_views()
 
     def _open_slope_dialog(self):
         """打开比降推算面板。先把当前工程喂进去再弹，否则表是空的。"""
@@ -1131,6 +1133,10 @@ class MainWindow(QMainWindow):
         for d in (self.dlg_zone, self.dlg_disaster):
             d.set_context(self.project, self.infos, self.results, self.cfg, idx)
             d.set_current(sec)
+        # 一维推算窗口跟随当前组：与手动面板同款，每次刷新重建组下拉框
+        # （project 为 None 时窗口自动清空并禁用「推算」）
+        self.dlg_hydro1d.set_project(self.project)
+        self.dlg_hydro1d.set_current_line(idx)
 
     def _current_section(self):
         ln = self._current_line()
@@ -1375,8 +1381,14 @@ class MainWindow(QMainWindow):
         if ln is not None and 0 <= row < len(ln.sections):
             sec = ln.sections[row]
             ch = (ln.chainage[row] if ln.chainage and row < len(ln.chainage) else None)
+            # 一维推算水面线：取当前线当前断面的推算水位（未推算过则无此线）
+            hydro_list = getattr(self, "hydro_results", {}).get(ln.name, [])
+            hy_lvl = (hydro_list[row].ws
+                      if row < len(hydro_list) and hydro_list[row] is not None
+                      else None)
             self.view_section.set_data(sec, self.results[sec.name],
-                                       self.infos[sec.name], ch)
+                                       self.infos[sec.name], ch,
+                                       hydro1d_level=hy_lvl)
             self.view_rating.set_data(ordered, sec.name)
         else:
             self.view_rating.set_data(ordered, None)
