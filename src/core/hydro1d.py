@@ -15,6 +15,8 @@ def _downstream_index(sections: list[Section], infos: list[TerrainInfo]) -> int:
             idx = i
     return idx
 
+from .chainage import thalweg_point
+
 def _reach_chainage(line: ProfileLine, infos: list[TerrainInfo], ds_idx: int) -> list[float]:
     """给 RASlite 用的 chainage：最下游=0，向上游沿河累计递增。"""
     sections = line.sections
@@ -25,10 +27,9 @@ def _reach_chainage(line: ProfileLine, infos: list[TerrainInfo], ds_idx: int) ->
         if line.profile and len(line.profile_dist) == n:
             dist_to_prev[i] = abs(line.profile_dist[i] - line.profile_dist[i - 1])
         else:
-            s1, s2 = sections[i-1], sections[i]
-            x1, y1 = s1.x, s1.y
-            x2, y2 = s2.x, s2.y
-            dist_to_prev[i] = math.hypot(x2 - x1, y2 - y1)
+            p1 = thalweg_point(sections[i-1], infos[i-1])
+            p2 = thalweg_point(sections[i], infos[i])
+            dist_to_prev[i] = math.hypot(p2[0] - p1[0], p2[1] - p1[1])
 
     cumulative = [0.0] * n
     for i in range(1, n):
@@ -38,7 +39,7 @@ def _reach_chainage(line: ProfileLine, infos: list[TerrainInfo], ds_idx: int) ->
     return res
 
 def _to_cross_section(sec: Section, info: TerrainInfo, dist_ds: float):
-    from src.raslite import CrossSection
+    from raslite import CrossSection
     points = [(float(s), float(z)) for s, z in zip(sec.s, sec.z)]
     p = sec.params
     n = p.roughness if p.roughness and p.roughness == p.roughness else 0.03
@@ -92,14 +93,15 @@ def compute_line_profile(line: ProfileLine, cfg: Config, hydro: HydroConfig) -> 
 
     sorted_items = sorted(list(range(len(line.sections))), key=lambda i: ras_chainage[i])
 
-    from src.raslite import SteadyProfile
+    from raslite import SteadyProfile
 
     cross_sections = []
 
     q_val = hydro.q_override
     if q_val is None or q_val != q_val:
         top_sec = line.sections[sorted_items[-1]]
-        q_val = top_sec.params.design_q if top_sec.params.design_q else 50.0
+        dq = top_sec.params.design_q
+        q_val = dq if (dq is not None and dq == dq) else 50.0
 
     for sort_idx, original_idx in enumerate(sorted_items):
         sec = line.sections[original_idx]
@@ -114,8 +116,15 @@ def compute_line_profile(line: ProfileLine, cfg: Config, hydro: HydroConfig) -> 
         xs.chainage = ras_chainage[original_idx]
         cross_sections.append(xs)
 
-    boundary_sec = line.sections[sorted_items[0]] if hydro.regime != "supercritical" else line.sections[sorted_items[-1]]
-    boundary_tuple = _boundary(hydro, boundary_sec, q_val)
+    if hydro.regime == "mixed":
+        ds_sec = line.sections[sorted_items[0]]     # 最下游
+        us_sec = line.sections[sorted_items[-1]]    # 最上游
+        boundary_tuple = (_boundary(hydro, ds_sec, q_val),
+                          _boundary(hydro, us_sec, q_val))
+    else:
+        boundary_sec = (line.sections[sorted_items[0]] if hydro.regime != "supercritical"
+                        else line.sections[sorted_items[-1]])
+        boundary_tuple = _boundary(hydro, boundary_sec, q_val)
 
     profile = SteadyProfile(
         sections=cross_sections,

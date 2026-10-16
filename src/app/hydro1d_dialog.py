@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (
     QLineEdit, QPushButton, QFormLayout, QGroupBox
 )
 from PySide6.QtCore import Signal
-from src.core.model import HydroConfig
+from core.model import HydroConfig
 
 class Hydro1DDialog(QDialog):
     # 当参数改变且用户点击应用时触发此信号

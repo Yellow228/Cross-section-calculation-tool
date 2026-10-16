@@ -318,8 +318,8 @@ def export_all(project: Project,
             # During normal execution flow from main_window, results might be cached there,
             # but since export_all only takes project and results, we must re-compute
             # or pass it in. Re-computing on the fly for export is safest.
-            from src.core.hydro1d import compute_line_profile
-            from src.core.model import HydroConfig
+            from .hydro1d import compute_line_profile
+            from .model import HydroConfig
             try:
                 hydro_cfg = line.hydro_config if hasattr(line, "hydro_config") and line.hydro_config else HydroConfig()
                 hydro_res, _ = compute_line_profile(line, cfg, hydro_cfg)

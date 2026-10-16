@@ -926,7 +926,7 @@ class MainWindow(QMainWindow):
             return
 
         from .hydro1d_dialog import Hydro1DDialog
-        from src.core.model import HydroConfig
+        from core.model import HydroConfig
 
         row = self.lst_lines.currentRow()
         if row < 0:
@@ -952,7 +952,7 @@ class MainWindow(QMainWindow):
         line.hydro_config = cfg
         self._dirty = True
 
-        from src.core.hydro1d import compute_line_profile
+        from core.hydro1d import compute_line_profile
         try:
             res_list, warns = compute_line_profile(line, self.cfg, cfg)
         except Exception as e:

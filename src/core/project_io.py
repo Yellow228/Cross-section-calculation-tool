@@ -274,7 +274,7 @@ def dict_to_project(data: dict) -> tuple[Project, Config, dict]:
                          f"{FORMAT_VERSION}，请升级程序后再打开")
 
     lines: list[ProfileLine] = []
-    from src.core.model import HydroConfig
+    from .model import HydroConfig
 
     for ld in data.get("profile_lines") or []:
         secs = [_section_from_dict(s) for s in (ld.get("sections") or [])]
