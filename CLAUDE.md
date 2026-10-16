@@ -31,8 +31,9 @@ Q1~Q15 的用户决策记录、以及重写中自引入缺陷（M1~M5）的复�
 只有 `reader.py`（读 xlsx）和 `exporter.py`（写 xlsx）允许 import openpyxl。
 其余模块**不要引入 numpy / pandas**。
 
-**主理由是可测试性**：数值核心这一层不依赖任何东西——core 里 18 个模块有 16 个是纯标准库，
-`tests/test_core.py` 的 179 个用例里有 176 个不装依赖就能用系统 Python 直接跑，
+**主理由是可测试性**：数值核心这一层不依赖任何东西——core 里只有 `reader.py` /
+`exporter.py` 依赖 openpyxl（读写出 xlsx），其余纯标准库；`src/raslite/`（一维推算引擎）
+整个内核也是纯标准库。`tests/` 下 195 个用例里绝大多数不装依赖就能用系统 Python 直接跑，
 "改数值逻辑先跑单测"的门槛才足够低。
 次要理由：计算量只有 10⁵ 量级，纯 Python 毫秒级，numpy 的性能优势用不上；
 数值核心也不该依赖一个会自己改变归约实现的库。
@@ -81,6 +82,9 @@ Q1~Q15 的用户决策记录、以及重写中自引入缺陷（M1~M5）的复�
 ```bat
 :: 单元测试（不需要任何第三方依赖，个数以实际输出为准）
 .venv\Scripts\python.exe tests\test_core.py
+
+:: RASlite 引擎自带回归（vendored 第三方代码；升级/整包替换后必跑）
+.venv\Scripts\python.exe tests\raslite\run_all.py
 
 :: 依赖自检
 .venv\Scripts\python.exe tools\verify_env.py
@@ -135,34 +139,54 @@ Q1~Q15 的用户决策记录、以及重写中自引入缺陷（M1~M5）的复�
 | 模块 | 职责 |
 |---|---|
 | `config.py` | **所有**可调参数的唯一来源（水位步长、阈值、编码、分组规则…） |
-| `model.py` | `SectionParams` / `Section` / `TerrainInfo` / `SectionResult` / `ProfileLine` / `Project`；**`Section` 上的手动覆盖字段**（`thalweg_manual` / `zone_manual`+`zone_left`/`zone_right` / `disaster_idx_manual`）与 `override_errors()`、`thalweg_index()`；`argmin_index()` / `is_valid_index()` 供 terrain 共用 |
-| `reader.py` | xlsx 解析、块切分、块分类、**X/Y 列序判定**（`detect_xy_order` / `resolve_xy_order`，见坑 #21）、空间分组（唯一依赖 openpyxl 的模块之一） |
+| `model.py` | `SectionParams` / `Section` / `TerrainInfo` / `SectionResult` / `ProfileLine` / `HydroConfig` / `HydroResult` / `Project`；**`Section` 上的手动覆盖字段**（`thalweg_manual` / `zone_manual`+`zone_left`/`zone_right` / `disaster_idx_manual`）与 `override_errors()`、`thalweg_index()`；`argmin_index()` / `is_valid_index()` 供 terrain 共用 |
+| `reader.py` | xlsx 解析、块切分、块分类、**X/Y 列序判定**（`detect_xy_order`）、空间分组（唯一依赖 openpyxl 的模块之一） |
 | `geom.py` | `section_geom`(A/P/B)、`surface_span`、**`wetted_polygons`**（见坑 #2） |
-| `terrain.py` | 深泓 / 峰点 / 转折点两阶段扫描 / 成灾水位 / **`_build_zones`**（见坑 #1）；**先算自动值再套人工覆盖**（`_zone_override`、`_peaks_around`）；⚠ **转折点（永远自动）与分区边界（可覆盖）是两条独立的路**，见坑 #13 |
+| `terrain.py` | 深泓 / 峰点 / 转折点两阶段扫描 / 成灾水位 / **`_build_zones`**（见坑 #1）；**先算自动值再套人工覆盖**；⚠ **转折点（永远自动）与分区边界（可覆盖）是两条独立的路**，见坑 #13 |
 | `rating.py` | `matlab_colon` 水位向量 + 复式分区曼宁求和 + 单调性检查 + **`hvec_row_counts`**（见坑 #12） |
 | `interp.py` | `interp1` 线性+外推、水面交点搜索、坐标插值 |
 | `spatial.py` | 线段求交、折线最短距离、按相交关系分组（**纯标准库，不要引入 shapely**） |
-| `chainage.py` | 里程计算、起始端点重定基、按交点反算桩号 |
-| `slope.py` | 按纵断面推算平均比降。默认口径**约翰斯通-克罗斯法**，另有两端点法 / 最小二乘可切换。⚠ 两处易错：① 用 `profile.dist` **原始起点距**坐标系，不是 `line.chainage` 重定基桩号；② JC 法必须用**开方版**公式，线性版恒等于两端点法（见「坑 #10」） |
-| `hydro1d.py` | **一维水动力推算**。严格遵循“零依赖”约束，使用纯 Python 标准库编写了标准步长法求解器，支持缓流、急流的水面线推算与临界水深求解。注：局部损失系数取的是待求断面（缓流 sec_up / 急流 sec_down），收缩/扩张由速度比较判定。 |
+| `chainage.py` | 里程计算、起始端点重定基、按交点反算桩号（⚠ 与一维推算用的 chainage **不是同一套**，见坑 #35） |
+| `slope.py` | 按纵断面推算平均比降（默认**约翰斯通-克罗斯法**，另有两端点法 / 最小二乘）。⚠ 用 `profile.dist` **原始起点距**，不是 `line.chainage`；JC 必须用**开方版**公式（见坑 #10） |
+| `hydro1d.py` | **一维推算适配层**：把 `ProfileLine` 映射成 RASlite 的 `CrossSection`/`SteadyProfile`、跑推算、把结果回映射为 `HydroResult`。**只做映射，不含水力计算**（引擎见下方 `src/raslite/`）。入口 `compute_line_profile(line, cfg, hydro)` |
 | `params.py` | 参数手工填写 / 批量修改 / 导入合并（`only_missing` 模式） |
 | `solver.py` | 单断面求解编排 |
-| `project_io.py` | 工程文件（`.dmprj`，单个 JSON 文本）读写。全量快照，**不存计算结果**。⚠ `null` 对不同字段含义不同，见「坑 #11」 |
-| `exporter.py` | 三个 CSV + xlsx（另一个依赖 openpyxl 的模块），以及一维推算结果导出 |
+| `project_io.py` | 工程文件（`.dmprj`，单个 JSON 文本）读写。全量快照，**不存计算结果**。⚠ `null` 对不同字段含义不同，见坑 #11 |
+| `exporter.py` | 各类结果 CSV + xlsx（另一个依赖 openpyxl 的模块），含**一维水面线要素表**导出 |
+| `edit.py` | 横断面几何编辑（改 / 增 / 删测点，`s` 与 `x/y` 同步），见坑 #15 |
+| `version.py` | 版本号 `VERSION`、`CHANGELOG`、`SIGNATURE`、构建哈希读取 |
+
+### `src/raslite/` — 一维推算引擎（vendored，纯标准库，见坑 #36）
+
+自研的一维恒定流水面线内核（独立仓库 `Yellow228/RASlite`），按 **vendored** 方式整包拷入。
+**原则上不改它的内部**——升级靠重新拷上游，要适配就在 `core/hydro1d.py` 那层做。
+
+| 模块 | 职责 |
+|---|---|
+| `geometry.py` | `CrossSection`（断面几何 / 水力学属性）、`SectionProps`（A / P / T / K / α） |
+| `hydraulics.py` | `critical_ws`（HEC-RAS secant 法）/ `normal_ws` / `specific_force` / Froude |
+| `profile.py` | `SteadyProfile`（标准步长法：缓流 / 急流 / 混合流，含**比力守恒**定位水跃）、`SectionResult` |
+| `network.py` | 河网（`Reach` + `Junction`）亚临界解算。**一期不接** |
+
+约定：**chainage 大 = 下游**（见坑 #35）；`regime` ∈ `subcritical` / `supercritical` /
+`mixed`；`mixed` 的 `boundary` 要**两个**元组（下游、上游），其余流态只需一个。
+升级后**必跑 `tests/raslite/run_all.py`**。
 
 ### `src/app/` — PySide6 界面层
 
 | 模块 | 职责 |
 |---|---|
-| `main.py` | 入口；`--selftest` 自检；字体与图标设置 |
-| `main_window.py` | 主窗口，菜单栏、列表、重算调度、导出；手动覆盖的写入与校验（`_try_apply_override`） |
-| `dialogs.py` | 顶部菜单栏弹出的五个非模态面板：计算设置 / 批量填写 / 比降推算 / **一维水面线推算** / **分区调节 + 成灾水位**（后两个见 §五 #13） |
+| `main.py` | 入口；把 `src/` 加入 `sys.path`（故全项目用 `from core.xxx`/`from app.xxx`，**不是** `from src.xxx`，见坑 #36）；`--selftest` 自检；字体与图标设置 |
+| `main_window.py` | 主窗口，菜单栏、列表、重算调度、导出；手动覆盖的写入与校验（`_try_apply_override`）；一维推算回调 `_on_hydro_applied` → `core.hydro1d` |
+| `dialogs.py` | 顶部菜单栏弹出的非模态面板：计算设置 / 批量填写 / 比降推算 / **分区调节 + 成灾水位** / 导出选项 / 坐标列序（外加模态的「关于」） |
+| `hydro1d_dialog.py` | **一维水面线推算**设置窗口 `Hydro1DDialog`（流态 / 边界 / 流量；配置存 `ProfileLine.hydro_config`，与左侧列表双向跟随） |
+| `import_dialog.py` | 「导入 excel 数据」左右双栏窗口（见坑 #22 / #23 / #28） |
 | `widgets.py` | `make_spin()` 等共用控件 |
 | `param_panel.py` | 左侧「当前断面参数」精调面板 |
 | `canvas_base.py` | matplotlib 画布基类；悬停提示框统一走 `place_hover_note()`（见坑 #18） |
-| `section_view.py` | 断面形态图；**图上拾取模式**（`begin_pick` / `picked` / `cancel_pick`，只吸附实测测点）；手动与自动的记号区分 |
+| `section_view.py` | 断面形态图；**图上拾取模式**（`begin_pick` / `picked` / `cancel_pick`，只吸附实测测点，见坑 #13/#14）；绘制一维推算水面线 |
 | `section_editor.py` | **编辑横断面**窗口（左表格 + 右可拖动断面图）；`PointTable` 处理 Excel 粘贴；表格默认只读，见 §五 #16 / #17；窗口跟随主界面换断面，见 §五 #19 |
-| `rating_view.py` / `profile_view.py` | 水位–流量曲线 / 沿河纵剖面 |
+| `rating_view.py` / `profile_view.py` | 水位–流量曲线 / 沿河纵剖面（后者含**一维推算水面线**） |
 
 ### `tools/` — 辅助脚本（不是一次性脚本，都值得保留）
 
@@ -195,7 +219,11 @@ output/                     运行输出总目录（计算结果、各类核对�
 docs/images/                README 配图（由 gui_smoke 用示范数据生成）
 samples/demo_data/          合成示范数据（见 §六）
 samples/demo_project.dmprj  由它生成的工程文件示例
-tests/test_core.py          单元测试
+samples/MIXED.dmprj         HEC-RAS「Mixed Flow Regime Channel」算例转换（混合流对照）
+samples/EX1.dmprj           HEC-RAS「Chapter 4 Example Data」算例转换（3 河段河网）
+tests/test_core.py          单元测试主文件（另有 test_math_safety.py / test_rating.py）
+tests/raslite/run_all.py    RASlite 引擎自带回归（25 项，非 test_ 前缀，天然隔离）
+src/raslite/                一维推算引擎（vendored，纯标准库）
 src/app/assets/             icon.ico（多尺寸）+ icon.png
 original_matlab/            （本机）原 MATLAB 脚本，算法对照用；**不入库**，见 `.gitignore`
 ```
@@ -257,6 +285,11 @@ clone 出来的仓库里拷这些路径会找不到——这是预期，不是�
 ---
 
 ## 五、⚠️ 已踩过的坑（改代码前必读）
+
+> ⚠ **本清单里有 5 条（#20、#26、#27、#33、#34）描述的是 v2.0.0 已整体移除的
+> 旧自研一维求解器**（当时 `hydro1d.py` 自己实现标准步长法 + 二分/割线求根）。
+> 它们**保留仅作历史记录**，代码里已不存在对应实现。现行的引擎是 `src/raslite/`
+> （vendored），其相关约定见 **#35 / #36**；推倒重来的缘由见 `DESIGN.md` §4.10。
 
 ### #1 分区改成"不重叠"会漏算 19% 面积
 
@@ -927,7 +960,7 @@ Qt 默认的 Ctrl+V 会把**整段剪贴板塞进一个单元格**；Excel 复�
 
 ### #29 `setEnabled` 与 `setToolTip` 必须成对改
 
-`_ManualBase._sync_buttons()`（以及 `HydroLossDialog` 的填表逻辑）里，
+`_ManualBase._sync_buttons()` 里，
 每个控件都是「改可用状态」+「改提示文本」**成对**出现的：
 
 ```python
@@ -1064,6 +1097,40 @@ line.hydro1d_levels, line.hydro1d_nodes = compute_hydro1d_profile(line, cfg, res
 
 ---
 
+### #35 一维推算的 chainage 方向：**下游必须是最大里程**（反直觉，已错过两次）
+
+RASlite 的约定是 **chainage 大 = 下游**（沿流向递增）。适配层
+`core/hydro1d._reach_chainage()` 必须让"其实的下游断面"拿到**最大** chainage。
+
+**判反的症状（不报错、不崩溃，最危险）**：
+- 亚临界 / 超临界**推算方向互换** → 水头沿流向**递增**（违反能量递减）；
+- 混合流的**比力合并失效**、定位不到水跃（结果和"缓流单遍"几乎一样）。
+
+**唯一可靠的体检项**：把结果按 chainage 排序后，看**总水头是否沿流向递减**。
+
+**当前口径**：下游由 `_downstream_index` 按**河底最低点**自动认定；
+"深潭在中游 / 河床平缓 / 逆坡"的河道会判错（判错后方向反且无告警）。
+
+⚠ 本项目有**三套里程**，别混：`chainage.py` 的**显示桩号**（原点可配、恒非负）、
+`profile_dist`（横断面 × 纵断面交点的**原始起点距**）、给 RASlite 用的
+`_reach_chainage`（**下游最大**）。**UI 改显示桩号不影响推算方向**——适配层
+不读 `line.chainage`，它自己从 `profile_dist`（无纵断面时用深泓点平面距离）重算。
+
+### #36 两条"接线层"约定：import 路径 + vendored 库不要动
+
+**A. import 路径**：`main.py` 把 **`src/`** 加入 `sys.path`，所以全项目一律
+`from core.xxx` / `from app.xxx` / `from raslite.xxx`。
+❌ **不要写 `from src.xxx`**——`src` 不是包（没有 `__init__.py`），真实运行
+`python src/app/main.py` 时会 `ModuleNotFoundError`；而用 `-c` 试却可能因 cwd 进了
+`sys.path` 而侥幸通过（踩过的坑：这样测不出来）。
+**护栏**：`grep -rn "from src\.\|import src\." src/ tests/` 必须无输出。
+
+**B. `src/raslite/` 是 vendored 第三方代码**：升级靠"重新整包拷上游"，
+**不要在里面改逻辑**（改了下次同步就丢）。要适配就在 `core/hydro1d.py` 这层做。
+升级后必跑 `tests/raslite/run_all.py`。
+
+---
+
 ## 六、数据与当前状态
 
 ⚠ **`data/` 不入库**（真实测量数据，不随仓库分发；见 `.gitignore`）。
@@ -1074,6 +1141,10 @@ line.hydro1d_levels, line.hydro1d_nodes = compute_hydro1d_profile(line, cfg, res
 由 `tools/make_demo_data.py` 生成）。`--selftest` 与 `tools/gui_smoke.py` 在
 `data/` 缺失时自动回退到它——**所以本节的结论只适用于 `data/` 那份真实数据**，
 拿 demo_data 跑出来的条数、分区数都不一样，别照着本节去核对演示结果。
+
+**另有两个 HEC-RAS 官方算例**转成的工程文件（可公开，供**一维推算**对照）：
+`samples/MIXED.dmprj`（单河段矩形渠道，呈现"上游急流 → 水跃 → 下游缓流"）与
+`samples/EX1.dmprj`（3 河段河网）。它们是混合流最方便的回归样本。
 
 改数据分组 / 分区相关逻辑时，**两份都要跑**：真实数据验证不炸，
 demo_data 保证干净环境下也能验证。
@@ -1118,6 +1189,9 @@ secC(3) secD(3) secE-段1(3) secE-段2(4)
    但新数据里桥块带编号了（`桥1`~`桥4`），可能希望纳入。
 3. `secA-7` 的成灾水位比设计水位高 5.4 m，疑似右岸坡长缓导致转折点扫描偏远。
    现在有两条路：调陡坡/缓坡阈值（「计算设置」），或直接「分区调节」手动指定边界。
+4. **一维推算的"下游"仍靠河底最低点自动判定**（见坑 #35）——对"深潭在中游 / 河床
+   平缓 / 逆坡"的河道会判反且**无告警**。若要根治，需引入"手动指定下游断面"或
+   "用纵断面流向定向"（原方案见 `给agent的下游断面设置提示词.md`）。
 
 ---
 
