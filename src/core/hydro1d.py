@@ -18,7 +18,10 @@ def _downstream_index(sections: list[Section], infos: list[TerrainInfo]) -> int:
 from .chainage import thalweg_point
 
 def _reach_chainage(line: ProfileLine, infos: list[TerrainInfo], ds_idx: int) -> list[float]:
-    """给 RASlite 用的 chainage：最下游=0，向上游沿河累计递增。"""
+    """给 RASlite 用的 chainage：沿流向递增（下游最大）。
+
+    RASlite 约定 chainage 大 = 下游，因此最上游=0、最下游=最大。
+    """
     sections = line.sections
     n = len(sections)
     dist_to_prev = [0.0] * n
@@ -36,7 +39,9 @@ def _reach_chainage(line: ProfileLine, infos: list[TerrainInfo], ds_idx: int) ->
         cumulative[i] = cumulative[i-1] + dist_to_prev[i]
 
     res = [abs(c - cumulative[ds_idx]) for c in cumulative]
-    return res
+    # 反转为"沿流向里程"：下游最大（RASlite 约定），最上游=0
+    max_d = max(res)
+    return [max_d - di for di in res]
 
 def _to_cross_section(sec: Section, info: TerrainInfo, dist_ds: float):
     from raslite import CrossSection
@@ -91,15 +96,17 @@ def compute_line_profile(line: ProfileLine, cfg: Config, hydro: HydroConfig) -> 
     ds_idx = _downstream_index(line.sections, infos)
     ras_chainage = _reach_chainage(line, infos, ds_idx)
 
+    # sorted_items 升序 = 上游→下游（chainage 下游最大，见 _reach_chainage）
     sorted_items = sorted(list(range(len(line.sections))), key=lambda i: ras_chainage[i])
 
     from raslite import SteadyProfile
 
     cross_sections = []
+    n = len(sorted_items)
 
     q_val = hydro.q_override
     if q_val is None or q_val != q_val:
-        top_sec = line.sections[sorted_items[-1]]
+        top_sec = line.sections[sorted_items[0]]     # 最上游
         dq = top_sec.params.design_q
         q_val = dq if (dq is not None and dq == dq) else 50.0
 
@@ -107,23 +114,25 @@ def compute_line_profile(line: ProfileLine, cfg: Config, hydro: HydroConfig) -> 
         sec = line.sections[original_idx]
         info = infos[original_idx]
 
-        if sort_idx == 0:
+        # dist_ds = 本断面到其下游断面的距离；最下游（sort_idx == n-1）为 0
+        if sort_idx == n - 1:
             dist_ds = 0.0
         else:
-            dist_ds = ras_chainage[original_idx] - ras_chainage[sorted_items[sort_idx - 1]]
+            ds_neighbor = sorted_items[sort_idx + 1]   # 下游相邻
+            dist_ds = ras_chainage[ds_neighbor] - ras_chainage[original_idx]
 
         xs = _to_cross_section(sec, info, dist_ds)
         xs.chainage = ras_chainage[original_idx]
         cross_sections.append(xs)
 
     if hydro.regime == "mixed":
-        ds_sec = line.sections[sorted_items[0]]     # 最下游
-        us_sec = line.sections[sorted_items[-1]]    # 最上游
+        ds_sec = line.sections[sorted_items[-1]]    # 最下游
+        us_sec = line.sections[sorted_items[0]]     # 最上游
         boundary_tuple = (_boundary(hydro, ds_sec, q_val),
                           _boundary(hydro, us_sec, q_val))
     else:
-        boundary_sec = (line.sections[sorted_items[0]] if hydro.regime != "supercritical"
-                        else line.sections[sorted_items[-1]])
+        boundary_sec = (line.sections[sorted_items[-1]] if hydro.regime != "supercritical"
+                        else line.sections[sorted_items[0]])
         boundary_tuple = _boundary(hydro, boundary_sec, q_val)
 
     profile = SteadyProfile(
