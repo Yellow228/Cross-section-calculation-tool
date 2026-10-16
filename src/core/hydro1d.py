@@ -92,10 +92,9 @@ def _to_cross_section(sec: Section, info: TerrainInfo, dist_ds: float):
         c_contract=0.1, c_expand=0.3,
     )
 
-def _boundary(hydro: HydroConfig, sec_bound: Section, q: float) -> tuple:
+def _boundary(hydro: HydroConfig, sec_bound: Section, q: float, warnings=None) -> tuple:
     kind, val = hydro.boundary_kind, hydro.boundary_value
-    if kind == "ws":
-        return ("ws", val)
+
     if kind == "critical":
         return ("critical",)
 
@@ -105,6 +104,15 @@ def _boundary(hydro: HydroConfig, sec_bound: Section, q: float) -> tuple:
 
     if hydro.boundary_kind == "normal" and val == val and val > 0:
         s0 = val
+
+    if kind == "ws":
+        if val == val and val is not None:
+            return ("ws", val)
+        if warnings is not None:
+            warnings.append(
+                f"已知水位留空，已退化为正常水深边界"
+                f"（边界断面「{sec_bound.name}」，比降 {s0:.6g}）")
+        return ("normal", s0)
 
     return ("normal", s0)
 
@@ -167,12 +175,12 @@ def compute_line_profile(line: ProfileLine, cfg: Config, hydro: HydroConfig) -> 
     if hydro.regime == "mixed":
         ds_sec = line.sections[sorted_items[-1]]    # 最下游
         us_sec = line.sections[sorted_items[0]]     # 最上游
-        boundary_tuple = (_boundary(hydro, ds_sec, q_val),
-                          _boundary(hydro, us_sec, q_val))
+        boundary_tuple = (_boundary(hydro, ds_sec, q_val, warnings_out),
+                          _boundary(hydro, us_sec, q_val, warnings_out))
     else:
         boundary_sec = (line.sections[sorted_items[-1]] if hydro.regime != "supercritical"
                         else line.sections[sorted_items[0]])
-        boundary_tuple = _boundary(hydro, boundary_sec, q_val)
+        boundary_tuple = _boundary(hydro, boundary_sec, q_val, warnings_out)
 
     profile = SteadyProfile(
         sections=cross_sections,

@@ -58,7 +58,7 @@ class Hydro1DDialog(QDialog):
         form_layout.addRow("边界类型:", self.boundary_kind_combo)
 
         self.boundary_val_edit = QLineEdit()
-        self.boundary_val_edit.setPlaceholderText("可为空。正常水深填比降，已知水位填高程。")
+        self.boundary_val_edit.setPlaceholderText("可为空。正常水深填比降，已知水位填高程；已知水位留空时按正常水深推算。")
         self.boundary_val_edit.setToolTip(
             "边界值为边界断面的比降（normal）或高程（ws）。留空使用断面自身参数。")
         self.boundary_val_edit.setAccessibleName("边界值输入")
