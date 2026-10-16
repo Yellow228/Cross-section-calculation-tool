@@ -75,6 +75,20 @@ class Hydro1DDialog(QDialog):
             "输入覆盖设计流量的数值，留空使用断面原参数。")
         form_layout.addRow("流量:", self.q_edit)
 
+        # 下游断面 / 流向
+        self.cmb_downstream = QComboBox()
+        self.cmb_downstream.addItems(
+            ["自动（河底最低点）", "首个断面为下游", "末个断面为下游", "指定断面…"])
+        self.ds_kinds = ["lowest", "first", "last", "name"]
+        self.cmb_downstream.setToolTip(
+            "决定推算方向（RASlite 约定：下游断面获得最大里程）。默认按河底最低点自动判定；"
+            "若中游有深潭或河道平缓导致误判，可手动指定下游边界断面。")
+        form_layout.addRow("下游断面:", self.cmb_downstream)
+
+        self.cmb_downstream_sec = QComboBox()
+        self.cmb_downstream_sec.setEnabled(False)
+        form_layout.addRow("", self.cmb_downstream_sec)
+
         layout.addLayout(form_layout)
 
         # ---------------- 底部 ----------------
@@ -90,6 +104,7 @@ class Hydro1DDialog(QDialog):
 
         self.boundary_kind_combo.currentIndexChanged.connect(self._on_bkind_changed)
         self._on_bkind_changed(self.boundary_kind_combo.currentIndex())
+        self.cmb_downstream.currentIndexChanged.connect(self._on_downstream_changed)
 
     # ---------------- 上下文（由主窗口推送，单一真相）----------------
 
@@ -174,7 +189,20 @@ class Hydro1DDialog(QDialog):
         else:
             self.q_edit.clear()
 
+        self.cmb_downstream.setCurrentIndex(self.ds_kinds.index(cfg.downstream_kind)
+            if cfg.downstream_kind in self.ds_kinds else 0)
+
+        self.cmb_downstream_sec.clear()
+        if ln is not None:
+            for s in ln.sections:
+                self.cmb_downstream_sec.addItem(s.name)
+            if cfg.downstream_kind == "name" and cfg.downstream_name:
+                idx = self.cmb_downstream_sec.findText(cfg.downstream_name)
+                if idx >= 0:
+                    self.cmb_downstream_sec.setCurrentIndex(idx)
+
         self._on_bkind_changed(self.boundary_kind_combo.currentIndex())
+        self._on_downstream_changed(self.cmb_downstream.currentIndex())
 
     def _collect_config(self) -> HydroConfig:
         """把控件读成 HydroConfig（非法数字按留空处理，不弹错——推算时再校验）。"""
@@ -190,14 +218,23 @@ class Hydro1DDialog(QDialog):
         except ValueError:
             q_override = None
 
+        kind = self.ds_kinds[self.cmb_downstream.currentIndex()]
+        name = (self.cmb_downstream_sec.currentText().strip()
+                if kind == "name" and self.cmb_downstream_sec.count() > 0 else None)
+
         return HydroConfig(
             regime=self.regimes[self.regime_combo.currentIndex()],
             boundary_kind=self.b_kinds[self.boundary_kind_combo.currentIndex()],
             boundary_value=boundary_value,
             q_override=q_override,
+            downstream_kind=kind,
+            downstream_name=name,
         )
 
     # ---------------- 动作 ----------------
+
+    def _on_downstream_changed(self, idx):
+        self.cmb_downstream_sec.setEnabled(self.ds_kinds[idx] == "name")
 
     def _on_bkind_changed(self, idx):
         kind = self.b_kinds[idx]

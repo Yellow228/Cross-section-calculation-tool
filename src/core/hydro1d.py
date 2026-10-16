@@ -5,8 +5,29 @@ from .model import ProfileLine, Section, HydroConfig, HydroResult
 from .terrain import analyze_terrain, TerrainInfo
 from .config import Config
 
-def _downstream_index(sections: list[Section], infos: list[TerrainInfo]) -> int:
-    """河底最低点（dmin 最小）为最下游，返回其索引。"""
+def _downstream_index(sections: list[Section], infos: list[TerrainInfo],
+                      hydro: Optional[HydroConfig] = None) -> int:
+    """返回最下游断面的索引。
+
+    hydro.downstream_kind：
+        "lowest"（默认）河底最低点；"first" 首个断面；"last" 末个断面；
+        "name" 按 hydro.downstream_name 精确匹配断面名。
+    非法或找不到时回退为 "lowest"。
+    """
+    kind = getattr(hydro, "downstream_kind", "lowest") if hydro is not None else "lowest"
+
+    if kind == "first":
+        return 0
+    if kind == "last":
+        return len(sections) - 1
+    if kind == "name":
+        name = getattr(hydro, "downstream_name", None)
+        if name:
+            for i, s in enumerate(sections):
+                if s.name == name:
+                    return i
+        # 找不到 -> 回退 lowest（调用方会补 warning）
+
     idx = 0
     mz = infos[0].dmin
     for i in range(1, len(sections)):
@@ -89,11 +110,29 @@ def _boundary(hydro: HydroConfig, sec_bound: Section, q: float) -> tuple:
 
 def compute_line_profile(line: ProfileLine, cfg: Config, hydro: HydroConfig) -> tuple[list[HydroResult], list[str]]:
     """对一条纵断面线做一维水面线推算。"""
+    warnings_out = []
     if not line.sections:
         return [], []
 
     infos = [analyze_terrain(s, cfg) for s in line.sections]
-    ds_idx = _downstream_index(line.sections, infos)
+    ds_idx = _downstream_index(line.sections, infos, hydro)
+
+    kind = getattr(hydro, "downstream_kind", "lowest")
+    if kind == "name":
+        name = getattr(hydro, "downstream_name", None)
+        found = False
+        if name:
+            for s in line.sections:
+                if s.name == name:
+                    found = True
+                    break
+        if not found:
+            warnings_out.append(f"未找到下游断面「{name}」，已回退为河底最低点断面")
+            kind = "lowest"
+
+    if kind == "lowest" and 0 < ds_idx < len(line.sections) - 1:
+        warnings_out.append("自动判定的下游断面位于河道中部，可能因中游深潭导致流向误判，建议手动指定下游断面")
+
     ras_chainage = _reach_chainage(line, infos, ds_idx)
 
     # sorted_items 升序 = 上游→下游（chainage 下游最大，见 _reach_chainage）
@@ -145,7 +184,6 @@ def compute_line_profile(line: ProfileLine, cfg: Config, hydro: HydroConfig) -> 
     ras_results = profile.run()
 
     hydro_results = [None] * len(line.sections)
-    warnings_out = []
 
     for r in ras_results:
         idx = next((i for i, s in enumerate(line.sections) if s.name == r.section.name), -1)
