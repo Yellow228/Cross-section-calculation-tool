@@ -16,7 +16,7 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
-from src.raslite import CrossSection, critical_ws, normal_ws, SteadyProfile, G
+from raslite import CrossSection, critical_ws, normal_ws, SteadyProfile, G
 
 PASS = 0
 FAIL = 0
@@ -205,7 +205,7 @@ def test_L1_S2():
     y_c = wc - cs0.z_min
 
     # --- ① 均匀流精确性: 边界=正常水深 -> 全线 y=yn (能量方程精确成立) ---
-    from src.raslite import normal_ws
+    from raslite import normal_ws
     wn = normal_ws(cs0, Q, S0)
     y_n = wn - cs0.z_min
     check("陡坡判定 yn<yc", y_n < y_c, f"yn={y_n:.4f} yc={y_c:.4f}")
