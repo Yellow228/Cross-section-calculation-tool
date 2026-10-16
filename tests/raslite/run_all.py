@@ -14,7 +14,7 @@ import math
 import sys
 import os
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from src.raslite import CrossSection, critical_ws, normal_ws, SteadyProfile, G
 

@@ -934,7 +934,7 @@ class MainWindow(QMainWindow):
             return
 
         line = self.project.profile_lines[row]
-        if not hasattr(line, "hydro_config"):
+        if line.hydro_config is None:
             line.hydro_config = HydroConfig()
 
         if self.dlg_hydro1d is not None:
@@ -1575,7 +1575,9 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            written = export_all(self.project, self.results, self.infos, self.cfg, out, options=options)
+            export_warns = []
+            written = export_all(self.project, self.results, self.infos, self.cfg, out,
+                                 options=options, warnings=export_warns)
         except Exception as e:
             QMessageBox.critical(self, "导出失败", str(e))
             return
@@ -1583,5 +1585,7 @@ class MainWindow(QMainWindow):
         if not written:
             QMessageBox.information(self, "导出完成", "当前选择未生成任何文件。")
         else:
-            QMessageBox.information(self, "导出完成", f"已生成 {len(written)} 个文件：\n" +
-                                    "\n".join(written))
+            msg = f"已生成 {len(written)} 个文件：\n" + "\n".join(written)
+            if export_warns:
+                msg += "\n\n⚠ " + "\n".join(export_warns)
+            QMessageBox.information(self, "导出完成", msg)

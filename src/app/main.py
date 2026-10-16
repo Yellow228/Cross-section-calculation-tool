@@ -245,8 +245,12 @@ def _selftest(argv: list[str]) -> int:
         if win.project is not None:
             from core.exporter import export_all
             out_dir = os.path.join(base, "output", "_selftest")
-            written = export_all(win.project, win.results, win.infos, win.cfg, out_dir)
+            export_warns: list[str] = []
+            written = export_all(win.project, win.results, win.infos, win.cfg, out_dir,
+                                 warnings=export_warns)
             lines.append(f"导出 OK：{len(written)} 个文件 -> {out_dir}")
+            for w in export_warns:
+                lines.append(f"导出告警：{w}")
 
             # 编码核验：CSV 必须带 UTF-8 BOM，否则中文 Windows 的 Excel
             # 会按 GBK 误码，中文表头与断面名全变乱码

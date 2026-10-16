@@ -252,8 +252,13 @@ def export_all(project: Project,
                infos: dict[str, TerrainInfo],
                cfg: Config,
                out_dir: Optional[str] = None,
-               options: Optional[dict[str, bool]] = None) -> list[str]:
+               options: Optional[dict[str, bool]] = None,
+               warnings: Optional[list[str]] = None) -> list[str]:
     """按纵断面线分目录导出全部结果，返回生成的文件路径列表。
+
+    warnings：出参。传入一个 list 时，会把"一维水面线要素表导出失败"这类
+    **非致命**问题写进去（core 层不认识界面，所以用出参照搬，与
+    `reader.load_folder` 的 `xy_report` 同一套路）。
 
     options 接受一个字典来控制哪些类型的文件被导出：
       'inundation': 淹没线坐标输出结果.csv
@@ -321,13 +326,15 @@ def export_all(project: Project,
             from .hydro1d import compute_line_profile
             from .model import HydroConfig
             try:
-                hydro_cfg = line.hydro_config if hasattr(line, "hydro_config") and line.hydro_config else HydroConfig()
+                hydro_cfg = line.hydro_config if line.hydro_config is not None else HydroConfig()
                 hydro_res, _ = compute_line_profile(line, cfg, hydro_cfg)
                 if hydro_res:
                     p7 = os.path.join(line_dir, f"{line.name}一维水面线要素表.csv")
                     export_hydro_csv(p7, hydro_res)
                     written.append(p7)
-            except Exception:
-                pass # If it fails to compute (e.g. no area), skip exporting for this line
+            except Exception as e:
+                if warnings is not None:
+                    warnings.append(
+                        f"{line.name}: 一维水面线要素表导出失败（{e}）")
 
     return written

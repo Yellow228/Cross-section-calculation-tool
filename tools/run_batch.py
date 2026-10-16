@@ -113,10 +113,16 @@ def main() -> None:
         for w in warnings:
             lines_out.append(f"  - {w}")
 
-    written = export_all(project, results, infos, cfg, a.out)
+    export_warns: list[str] = []
+    written = export_all(project, results, infos, cfg, a.out, warnings=export_warns)
     lines_out.append("\n===== 输出文件 =====")
     for p in written:
         lines_out.append(f"  {p}")
+
+    if export_warns:
+        lines_out.append("\n===== 导出告警 =====")
+        for w in export_warns:
+            lines_out.append(f"  - {w}")
 
     txt = "\n".join(lines_out)
     print(txt)

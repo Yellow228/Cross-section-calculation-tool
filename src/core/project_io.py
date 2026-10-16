@@ -237,7 +237,7 @@ def project_to_dict(project: Project, cfg: Config,
             "profile": _profile_to_dict(ln.profile),
             "sections": [_section_to_dict(s) for s in ln.sections],
         }
-        if hasattr(ln, "hydro_config") and ln.hydro_config is not None:
+        if ln.hydro_config is not None:
             hc = ln.hydro_config
             line_dict["hydro1d"] = {
                 "regime": hc.regime,

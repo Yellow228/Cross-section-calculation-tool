@@ -318,6 +318,10 @@ class ProfileLine:
     # 算比降要用原始起点距（slope.py），显示桩号用 chainage。
     profile_dist: list[float] = field(default_factory=list)
 
+    # 一维水面线推算配置（RASlite 引擎）。HydroConfig 定义在本类之后，
+    # 靠 `from __future__ import annotations` 延迟求值，此处引用无碍。
+    hydro_config: Optional[HydroConfig] = None
+
 
 @dataclass
 class HydroConfig:
