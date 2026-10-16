@@ -1,0 +1,851 @@
+﻿{
+ "format": "duanmian-project",
+ "version": 5,
+ "saved_at": "2026-10-16 10:41:23",
+ "source": {
+  "dir": "E:/VSCODE/HecrasStudy/examples/1D Steady Flow Hydraulics\\Mixed Flow Regime Channel",
+  "files": [
+   "MIXED.g01",
+   "MIXED.F01"
+  ]
+ },
+ "config": {
+  "section_pattern": "断面编号",
+  "first_col_is_north": true,
+  "export_coord_system": "survey",
+  "dH": 0.1,
+  "compound_mode": true,
+  "steep_slope": 0.4,
+  "turn_slope": 0.05,
+  "raise_level": 1.0,
+  "raise_enabled": true,
+  "output_disaster_level": true,
+  "export_pictures": true,
+  "picture_dir": "RatingCurve_Pic",
+  "output_dir": "output",
+  "csv_encoding": "utf-8-sig",
+  "ICON_FOUND": 156,
+  "ICON_NOT_FOUND": 172,
+  "ICON_DISASTER": 152,
+  "compat_drop_last_point": false,
+  "profile_block_name": "纵断面",
+  "cross_section_pattern": "^[^\\-_]+[-_]\\d+$",
+  "exclude_non_numbered": true,
+  "chainage_origin": "lowest",
+  "group_rule": "spatial",
+  "intersection_tolerance": 1.0,
+  "group_prefix_len": 3,
+  "group_separator": "-",
+  "group_regex": "^([^\\d]+)"
+ },
+ "profile_lines": [
+  {
+   "name": "Mixed Reach/Mixed Reach",
+   "order_source": "file",
+   "chainage": [
+    0.0,
+    30.48,
+    60.96,
+    91.44,
+    121.92,
+    152.4,
+    182.88,
+    243.84,
+    304.8,
+    365.76,
+    426.71999999999997,
+    487.67999999999995,
+    548.64,
+    609.6,
+    670.5600000000001,
+    731.5200000000001,
+    792.4800000000001,
+    853.4400000000002,
+    914.4000000000002
+   ],
+   "profile_dist": [],
+   "profile": null,
+   "sections": [
+    {
+     "name": "Mixed Reach@0.5682",
+     "x": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "y": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "s": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "z": [
+      24.384,
+      21.336000000000002,
+      21.336000000000002,
+      24.384
+     ],
+     "params": {
+      "name": "Mixed Reach@0.5682",
+      "slope": 0.010000000000000005,
+      "roughness": 0.015,
+      "design_q": 14.1584233,
+      "roughness_main": 0.015,
+      "roughness_left": null,
+      "roughness_right": null
+     },
+     "thalweg_manual": null,
+     "zone_manual": false,
+     "zone_left": null,
+     "zone_right": null,
+     "disaster_idx_manual": null
+    },
+    {
+     "name": "Mixed Reach@0.5493",
+     "x": [
+      30.48,
+      30.48,
+      30.48,
+      30.48
+     ],
+     "y": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "s": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "z": [
+      24.0792,
+      21.031200000000002,
+      21.031200000000002,
+      24.0792
+     ],
+     "params": {
+      "name": "Mixed Reach@0.5493",
+      "slope": 0.010000000000000005,
+      "roughness": 0.015,
+      "design_q": 14.1584233,
+      "roughness_main": 0.015,
+      "roughness_left": null,
+      "roughness_right": null
+     },
+     "thalweg_manual": null,
+     "zone_manual": false,
+     "zone_left": null,
+     "zone_right": null,
+     "disaster_idx_manual": null
+    },
+    {
+     "name": "Mixed Reach@0.5303",
+     "x": [
+      60.96,
+      60.96,
+      60.96,
+      60.96
+     ],
+     "y": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "s": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "z": [
+      23.7744,
+      20.7264,
+      20.7264,
+      23.7744
+     ],
+     "params": {
+      "name": "Mixed Reach@0.5303",
+      "slope": 0.010000000000000005,
+      "roughness": 0.015,
+      "design_q": 14.1584233,
+      "roughness_main": 0.015,
+      "roughness_left": null,
+      "roughness_right": null
+     },
+     "thalweg_manual": null,
+     "zone_manual": false,
+     "zone_left": null,
+     "zone_right": null,
+     "disaster_idx_manual": null
+    },
+    {
+     "name": "Mixed Reach@0.5114",
+     "x": [
+      91.44,
+      91.44,
+      91.44,
+      91.44
+     ],
+     "y": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "s": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "z": [
+      23.4696,
+      20.4216,
+      20.4216,
+      23.4696
+     ],
+     "params": {
+      "name": "Mixed Reach@0.5114",
+      "slope": 0.010000000000000005,
+      "roughness": 0.015,
+      "design_q": 14.1584233,
+      "roughness_main": 0.015,
+      "roughness_left": null,
+      "roughness_right": null
+     },
+     "thalweg_manual": null,
+     "zone_manual": false,
+     "zone_left": null,
+     "zone_right": null,
+     "disaster_idx_manual": null
+    },
+    {
+     "name": "Mixed Reach@0.4925",
+     "x": [
+      121.92,
+      121.92,
+      121.92,
+      121.92
+     ],
+     "y": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "s": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "z": [
+      23.1648,
+      20.1168,
+      20.1168,
+      23.1648
+     ],
+     "params": {
+      "name": "Mixed Reach@0.4925",
+      "slope": 0.010000000000000005,
+      "roughness": 0.015,
+      "design_q": 14.1584233,
+      "roughness_main": 0.015,
+      "roughness_left": null,
+      "roughness_right": null
+     },
+     "thalweg_manual": null,
+     "zone_manual": false,
+     "zone_left": null,
+     "zone_right": null,
+     "disaster_idx_manual": null
+    },
+    {
+     "name": "Mixed Reach@0.4735",
+     "x": [
+      152.4,
+      152.4,
+      152.4,
+      152.4
+     ],
+     "y": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "s": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "z": [
+      22.86,
+      19.812,
+      19.812,
+      22.86
+     ],
+     "params": {
+      "name": "Mixed Reach@0.4735",
+      "slope": 0.000586,
+      "roughness": 0.015,
+      "design_q": 14.1584233,
+      "roughness_main": 0.015,
+      "roughness_left": null,
+      "roughness_right": null
+     },
+     "thalweg_manual": null,
+     "zone_manual": false,
+     "zone_left": null,
+     "zone_right": null,
+     "disaster_idx_manual": null
+    },
+    {
+     "name": "Mixed Reach@0.4546",
+     "x": [
+      182.88,
+      182.88,
+      182.88,
+      182.88
+     ],
+     "y": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "s": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "z": [
+      22.847808,
+      19.799808,
+      19.799808,
+      22.847808
+     ],
+     "params": {
+      "name": "Mixed Reach@0.4546",
+      "slope": 0.000586,
+      "roughness": 0.015,
+      "design_q": 14.1584233,
+      "roughness_main": 0.015,
+      "roughness_left": null,
+      "roughness_right": null
+     },
+     "thalweg_manual": null,
+     "zone_manual": false,
+     "zone_left": null,
+     "zone_right": null,
+     "disaster_idx_manual": null
+    },
+    {
+     "name": "Mixed Reach@0.4167",
+     "x": [
+      243.84,
+      243.84,
+      243.84,
+      243.84
+     ],
+     "y": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "s": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "z": [
+      22.823424,
+      19.775424,
+      19.775424,
+      22.823424
+     ],
+     "params": {
+      "name": "Mixed Reach@0.4167",
+      "slope": 0.000586,
+      "roughness": 0.015,
+      "design_q": 14.1584233,
+      "roughness_main": 0.015,
+      "roughness_left": null,
+      "roughness_right": null
+     },
+     "thalweg_manual": null,
+     "zone_manual": false,
+     "zone_left": null,
+     "zone_right": null,
+     "disaster_idx_manual": null
+    },
+    {
+     "name": "Mixed Reach@0.3788",
+     "x": [
+      304.8,
+      304.8,
+      304.8,
+      304.8
+     ],
+     "y": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "s": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "z": [
+      22.79904,
+      19.75104,
+      19.75104,
+      22.79904
+     ],
+     "params": {
+      "name": "Mixed Reach@0.3788",
+      "slope": 0.000586,
+      "roughness": 0.015,
+      "design_q": 14.1584233,
+      "roughness_main": 0.015,
+      "roughness_left": null,
+      "roughness_right": null
+     },
+     "thalweg_manual": null,
+     "zone_manual": false,
+     "zone_left": null,
+     "zone_right": null,
+     "disaster_idx_manual": null
+    },
+    {
+     "name": "Mixed Reach@0.3409",
+     "x": [
+      365.76,
+      365.76,
+      365.76,
+      365.76
+     ],
+     "y": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "s": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "z": [
+      22.774656,
+      19.726656000000002,
+      19.726656000000002,
+      22.774656
+     ],
+     "params": {
+      "name": "Mixed Reach@0.3409",
+      "slope": 0.000586,
+      "roughness": 0.015,
+      "design_q": 14.1584233,
+      "roughness_main": 0.015,
+      "roughness_left": null,
+      "roughness_right": null
+     },
+     "thalweg_manual": null,
+     "zone_manual": false,
+     "zone_left": null,
+     "zone_right": null,
+     "disaster_idx_manual": null
+    },
+    {
+     "name": "Mixed Reach@0.3030",
+     "x": [
+      426.71999999999997,
+      426.71999999999997,
+      426.71999999999997,
+      426.71999999999997
+     ],
+     "y": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "s": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "z": [
+      22.774656,
+      19.726656000000002,
+      19.726656000000002,
+      22.774656
+     ],
+     "params": {
+      "name": "Mixed Reach@0.3030",
+      "slope": 0.0007999999999999841,
+      "roughness": 0.015,
+      "design_q": 14.1584233,
+      "roughness_main": 0.015,
+      "roughness_left": null,
+      "roughness_right": null
+     },
+     "thalweg_manual": null,
+     "zone_manual": false,
+     "zone_left": null,
+     "zone_right": null,
+     "disaster_idx_manual": null
+    },
+    {
+     "name": "Mixed Reach@0.2651",
+     "x": [
+      487.67999999999995,
+      487.67999999999995,
+      487.67999999999995,
+      487.67999999999995
+     ],
+     "y": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "s": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "z": [
+      22.725888,
+      19.677888000000003,
+      19.677888000000003,
+      22.725888
+     ],
+     "params": {
+      "name": "Mixed Reach@0.2651",
+      "slope": 0.000586,
+      "roughness": 0.015,
+      "design_q": 14.1584233,
+      "roughness_main": 0.015,
+      "roughness_left": null,
+      "roughness_right": null
+     },
+     "thalweg_manual": null,
+     "zone_manual": false,
+     "zone_left": null,
+     "zone_right": null,
+     "disaster_idx_manual": null
+    },
+    {
+     "name": "Mixed Reach@0.2273",
+     "x": [
+      548.64,
+      548.64,
+      548.64,
+      548.64
+     ],
+     "y": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "s": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "z": [
+      22.701504000000003,
+      19.653504,
+      19.653504,
+      22.701504000000003
+     ],
+     "params": {
+      "name": "Mixed Reach@0.2273",
+      "slope": 0.000586,
+      "roughness": 0.015,
+      "design_q": 14.1584233,
+      "roughness_main": 0.015,
+      "roughness_left": null,
+      "roughness_right": null
+     },
+     "thalweg_manual": null,
+     "zone_manual": false,
+     "zone_left": null,
+     "zone_right": null,
+     "disaster_idx_manual": null
+    },
+    {
+     "name": "Mixed Reach@0.1834",
+     "x": [
+      609.6,
+      609.6,
+      609.6,
+      609.6
+     ],
+     "y": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "s": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "z": [
+      22.677120000000002,
+      19.629120000000004,
+      19.629120000000004,
+      22.677120000000002
+     ],
+     "params": {
+      "name": "Mixed Reach@0.1834",
+      "slope": 0.0031500000000000577,
+      "roughness": 0.015,
+      "design_q": 14.1584233,
+      "roughness_main": 0.015,
+      "roughness_left": null,
+      "roughness_right": null
+     },
+     "thalweg_manual": null,
+     "zone_manual": false,
+     "zone_left": null,
+     "zone_right": null,
+     "disaster_idx_manual": null
+    },
+    {
+     "name": "Mixed Reach@0.1515",
+     "x": [
+      670.5600000000001,
+      670.5600000000001,
+      670.5600000000001,
+      670.5600000000001
+     ],
+     "y": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "s": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "z": [
+      22.485096,
+      19.437096,
+      19.437096,
+      22.485096
+     ],
+     "params": {
+      "name": "Mixed Reach@0.1515",
+      "slope": 0.003199999999999995,
+      "roughness": 0.015,
+      "design_q": 14.1584233,
+      "roughness_main": 0.015,
+      "roughness_left": null,
+      "roughness_right": null
+     },
+     "thalweg_manual": null,
+     "zone_manual": false,
+     "zone_left": null,
+     "zone_right": null,
+     "disaster_idx_manual": null
+    },
+    {
+     "name": "Mixed Reach@0.1136",
+     "x": [
+      731.5200000000001,
+      731.5200000000001,
+      731.5200000000001,
+      731.5200000000001
+     ],
+     "y": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "s": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "z": [
+      22.290024,
+      19.242024,
+      19.242024,
+      22.290024
+     ],
+     "params": {
+      "name": "Mixed Reach@0.1136",
+      "slope": 0.0031499999999999996,
+      "roughness": 0.015,
+      "design_q": 14.1584233,
+      "roughness_main": 0.015,
+      "roughness_left": null,
+      "roughness_right": null
+     },
+     "thalweg_manual": null,
+     "zone_manual": false,
+     "zone_left": null,
+     "zone_right": null,
+     "disaster_idx_manual": null
+    },
+    {
+     "name": "Mixed Reach@0.07576",
+     "x": [
+      792.4800000000001,
+      792.4800000000001,
+      792.4800000000001,
+      792.4800000000001
+     ],
+     "y": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "s": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "z": [
+      22.098000000000003,
+      19.05,
+      19.05,
+      22.098000000000003
+     ],
+     "params": {
+      "name": "Mixed Reach@0.07576",
+      "slope": 0.003199999999999995,
+      "roughness": 0.015,
+      "design_q": 14.1584233,
+      "roughness_main": 0.015,
+      "roughness_left": null,
+      "roughness_right": null
+     },
+     "thalweg_manual": null,
+     "zone_manual": false,
+     "zone_left": null,
+     "zone_right": null,
+     "disaster_idx_manual": null
+    },
+    {
+     "name": "Mixed Reach@0.03788",
+     "x": [
+      853.4400000000002,
+      853.4400000000002,
+      853.4400000000002,
+      853.4400000000002
+     ],
+     "y": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "s": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "z": [
+      21.902928,
+      18.854928,
+      18.854928,
+      21.902928
+     ],
+     "params": {
+      "name": "Mixed Reach@0.03788",
+      "slope": 0.0031499999999999996,
+      "roughness": 0.015,
+      "design_q": 14.1584233,
+      "roughness_main": 0.015,
+      "roughness_left": null,
+      "roughness_right": null
+     },
+     "thalweg_manual": null,
+     "zone_manual": false,
+     "zone_left": null,
+     "zone_right": null,
+     "disaster_idx_manual": null
+    },
+    {
+     "name": "Mixed Reach@0.00000",
+     "x": [
+      914.4000000000002,
+      914.4000000000002,
+      914.4000000000002,
+      914.4000000000002
+     ],
+     "y": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "s": [
+      0.0,
+      0.0,
+      6.096,
+      6.096
+     ],
+     "z": [
+      21.710904000000003,
+      18.662904,
+      18.662904,
+      21.710904000000003
+     ],
+     "params": {
+      "name": "Mixed Reach@0.00000",
+      "slope": 0.0031499999999999996,
+      "roughness": 0.015,
+      "design_q": 14.1584233,
+      "roughness_main": 0.015,
+      "roughness_left": null,
+      "roughness_right": null
+     },
+     "thalweg_manual": null,
+     "zone_manual": false,
+     "zone_left": null,
+     "zone_right": null,
+     "disaster_idx_manual": null
+    }
+   ]
+  }
+ ]
+}
