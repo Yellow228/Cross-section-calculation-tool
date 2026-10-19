@@ -110,8 +110,8 @@ def _boundary(hydro: HydroConfig, sec_bound: Section, q: float, warnings=None) -
             return ("ws", val)
         if warnings is not None:
             warnings.append(
-                f"已知水位留空，已退化为正常水深边界"
-                f"（边界断面「{sec_bound.name}」，比降 {s0:.6g}）")
+                f"{sec_bound.name}: 已知水位留空，已退化为正常水深边界"
+                f"（比降 {s0:.6g}）")
         return ("normal", s0)
 
     return ("normal", s0)
@@ -135,11 +135,14 @@ def compute_line_profile(line: ProfileLine, cfg: Config, hydro: HydroConfig) -> 
                     found = True
                     break
         if not found:
-            warnings_out.append(f"未找到下游断面「{name}」，已回退为河底最低点断面")
+            warnings_out.append(
+                f"[{line.name}] 未找到下游断面「{name}」，已回退为河底最低点断面")
             kind = "lowest"
 
     if kind == "lowest" and 0 < ds_idx < len(line.sections) - 1:
-        warnings_out.append("自动判定的下游断面位于河道中部，可能因中游深潭导致流向误判，建议手动指定下游断面")
+        warnings_out.append(
+            f"[{line.name}] 自动判定的下游断面位于河道中部，"
+            f"可能因中游深潭导致流向误判，建议手动指定下游断面")
 
     ras_chainage = _reach_chainage(line, infos, ds_idx)
 
@@ -196,7 +199,9 @@ def compute_line_profile(line: ProfileLine, cfg: Config, hydro: HydroConfig) -> 
     for r in ras_results:
         idx = next((i for i, s in enumerate(line.sections) if s.name == r.section.name), -1)
         if idx != -1:
-            warnings_out.extend(r.warnings)
+            # 引擎的告警文本本身不含断面名（它挂在各自断面上），汇总到顶层时补上，
+            # 否则"推算完成（含告警）"弹窗里只看到一串"默认取临界水深"，认不出是谁。
+            warnings_out.extend(f"{r.section.name}: {w}" for w in r.warnings)
             hydro_results[idx] = HydroResult(
                 name=r.section.name,
                 chainage=line.chainage[idx] if len(line.chainage) > idx else ras_chainage[idx],
