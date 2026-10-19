@@ -487,6 +487,64 @@ class TestExporter(unittest.TestCase):
             # 默认导出坐标系 = 测量坐标系，X/Y 就是内部的 x/y（x 是北），故不换
             self.assertIn('"500.000,100.000;565.000,165.000"', lines[1])
 
+    def test_endpoint_html_csv(self):
+        """带预览版：表头固定、前两列与普通版逐字一致、Comment 是单行 HTML。
+
+        三条断言各自对应一个真实踩点：
+        - 前两列必须与 `export_endpoint_csv` 完全一致（同名同格式），下游才能互换；
+        - HTML 必须**单行**，否则按逗号切分的下游工具会被单元格里的换行带偏；
+        - HTML 里**不能出现 `//`**，压成一行后它会把后面整段脚本注释掉。
+        """
+        import csv as _csv
+        import tempfile
+
+        sec = make_compound_section()
+        cfg = Config()
+        res, info = solve_section(sec, cfg)
+
+        with tempfile.TemporaryDirectory() as td:
+            p = os.path.join(td, "endpoint_html.csv")
+            exporter.export_endpoint_html_csv(p, [sec], [res], [info], cfg)
+            with open(p, encoding="utf-8-sig", newline="") as f:
+                rows = list(_csv.reader(f))
+
+        self.assertEqual(rows[0], ["名称", "平面坐标[X + Y]", "Comment"])
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[1][0], "CS01")
+        self.assertEqual(rows[1][1], "500.000,100.000;565.000,165.000")
+
+        doc = rows[1][2]
+        self.assertTrue(doc.startswith("<!doctype html>"))
+        self.assertNotIn("\n", doc)
+        self.assertNotIn("//", doc)
+        self.assertIn("CS01", doc)
+        self.assertIn("var S=[0", doc)                       # 几何已注入
+        self.assertIn(str(round(res.design_level, 6)), doc)  # 设计水位取自结果
+
+    def test_section_html_zone_bands_no_overshoot(self):
+        """分区色带右端必须是 `stop - 1`，不能把开区间上界当节点下标用。
+
+        `_build_zones` 生成的是「共享边界点」写法：
+            [(0, left+1), (left, right+1), (right, n)]
+        即分区覆盖的**节点**是 0..left / left..right / right..n-1。
+        以 TYSQ1-1 实测的 [(0,3),(2,7),(6,10)]、n=10 为例，正确色带是
+            0..2 / 2..6 / 6..9
+        曾经直接写 `s[stop]`，每条色带右移一段，相邻色带叠出深色。
+        """
+        from core.model import TerrainInfo
+        from core.section_html import _norm_zones
+
+        info = TerrainInfo()
+        info.zones = [(0, 3), (2, 7), (6, 10)]
+        bands, bounds = _norm_zones(info, 10)
+        self.assertEqual(bands, [[0, 2], [2, 6], [6, 9]])
+        self.assertEqual(bounds, [2, 6])
+
+        # 无分区信息时退化成整断面一条带
+        empty, no_bounds = _norm_zones(TerrainInfo(), 10)
+        self.assertEqual(empty, [[0, 9]])
+        self.assertEqual(no_bounds, [])
+
     def test_export_default_is_survey_system(self):
         """默认导出坐标系 = 测量坐标系：X 写 sec.x（北）、Y 写 sec.y（东）。
 

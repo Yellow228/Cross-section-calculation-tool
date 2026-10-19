@@ -29,6 +29,7 @@ from typing import Optional
 from .config import Config
 from .model import ProfileLine, Project, Section, SectionResult, TerrainInfo, HydroResult
 from .interp import edge_point
+from .section_html import section_html
 
 
 def matlab_num2str(v: float) -> str:
@@ -189,6 +190,28 @@ def export_endpoint_csv(path: str, sections: list[Section],
                     f'{matlab_num2str(res.design_level)}\n')
 
 
+def export_endpoint_html_csv(path: str, sections: list[Section],
+                             results: list[SectionResult],
+                             infos: list[TerrainInfo],
+                             cfg: Config) -> None:
+    """断面起终点坐标及水位（带横断面预览）CSV。
+
+    前两列与 `export_endpoint_csv` **完全一致**（名称、平面坐标[X + Y]），
+    第三列名为 `Comment`，内容是该断面的**自包含单行 HTML**（`section_html`
+    生成）——供支持富文本的查看端直接渲染，不依赖任何外部资源。
+
+    ⚠ 第三列里既有逗号也有双引号，必须走 `csv.writer` 自动加引号/转义；
+      手写 `f.write` 拼字符串会把整行拆散。
+    """
+    with open(path, "w", encoding=cfg.csv_encoding, newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["名称", "平面坐标[X + Y]", "Comment"])
+        for sec, res, info in zip(sections, results, infos):
+            w.writerow([sec.name,
+                        endpoint_xy_str(sec, cfg.export_coord_system),
+                        section_html(sec, info, res, cfg)])
+
+
 def export_hydro_csv(path: str, results: list[HydroResult]):
     """导出一维水面线推算结果表。
 
@@ -307,6 +330,7 @@ def export_all(project: Project,
       'inundation': 淹没线坐标输出结果.csv
       'rating': 水位流量关系曲线.csv
       'endpoint': 断面起终点坐标及水位.csv
+      'endpoint_html': 断面起终点坐标及水位（带横断面预览）.csv（Comment 列放单行 HTML）
       'range_raised': 设计水位加高淹没范围坐标.csv
       'range_design': 设计水位淹没范围坐标.csv
       'disaster': 成灾水位坐标.csv
@@ -347,6 +371,16 @@ def export_all(project: Project,
             export_endpoint_csv(p3, secs, res_list, cfg.csv_encoding,
                                 cfg.export_coord_system)
             written.append(p3)
+
+        if options.get('endpoint_html', False):
+            p3b = os.path.join(line_dir, "断面起终点坐标及水位（带横断面预览）.csv")
+            try:
+                export_endpoint_html_csv(p3b, secs, res_list, info_list, cfg)
+                written.append(p3b)
+            except Exception as e:
+                if warnings is not None:
+                    warnings.append(
+                        f"{line.name}: 断面起终点坐标及水位（带横断面预览）导出失败（{e}）")
 
         if options.get('range_raised', True):
             p4 = os.path.join(line_dir, f"{line.name}设计水位加高淹没范围坐标.csv")

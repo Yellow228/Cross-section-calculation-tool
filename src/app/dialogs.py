@@ -49,6 +49,7 @@ class ExportOptionsDialog(QDialog):
             'rating': QCheckBox("水位流量关系曲线.csv"),
             'inundation': QCheckBox("淹没线坐标输出结果.csv (原MATLAB混合版)"),
             'endpoint': QCheckBox("断面起终点坐标及水位.csv"),
+            'endpoint_html': QCheckBox("断面起终点坐标及水位（带横断面预览）.csv"),
             'range_raised': QCheckBox("设计水位加高淹没范围坐标.csv"),
             'hydro1d': QCheckBox("一维水面线要素表.csv (RASlite 推算)"),
             'hydro_range': QCheckBox("一维水面线淹没范围坐标.csv"),
