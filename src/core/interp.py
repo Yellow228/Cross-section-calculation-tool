@@ -6,7 +6,11 @@ interp1_linear_extrap 复现 MATLAB 的 interp1(..., 'linear', 'extrap')：
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:                      # 仅用于类型标注，运行期不导入（避免耦合）
+    from .config import Config
+    from .model import Section
 
 
 def interp1_linear_extrap(xs: list[float], ys: list[float], xi: float) -> float:
@@ -66,3 +70,23 @@ def interpolate_xy(x: list[float], y: list[float], z: list[float],
         return x[i1], y[i1]
     t = (H - z1) / (z2 - z1)
     return x[i1] + t * (x[i2] - x[i1]), y[i1] + t * (y[i2] - y[i1])
+
+
+def edge_point(sec: "Section", cfg: "Config", z: list[float], H: float,
+               dmin_idx: int, direction: str,
+               fallback_idx: int) -> tuple[Optional[tuple[float, float]], int]:
+    """求水位 H 在一侧的水面交点，返回 (点, 图标样式)。
+
+    找得到交点就线性插出平面坐标；找不到（该侧岸线全在水位以下）则退回该侧的
+    最高点，图标样式标记为"未找到"，与原 MATLAB 行为一致。
+
+    放在 interp 而不是各调用方里：设计水位、加高水位、一维推算水位都要用它，
+    两处各写一遍必然分叉（历史上就是这么错的）。
+    """
+    edge = find_water_edge(z, H, dmin_idx, direction)
+    if edge is not None:
+        i1, i2 = edge
+        return interpolate_xy(sec.x, sec.y, z, i1, i2, H), cfg.ICON_FOUND
+    if fallback_idx >= 0:
+        return (sec.x[fallback_idx], sec.y[fallback_idx]), cfg.ICON_NOT_FOUND
+    return None, cfg.ICON_NOT_FOUND

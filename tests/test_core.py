@@ -483,7 +483,7 @@ class TestExporter(unittest.TestCase):
             exporter.export_endpoint_csv(p3, [sec], [res])
             with open(p3, encoding="utf-8-sig") as f:
                 lines = f.read().strip().splitlines()
-            self.assertEqual(lines[0], "名称,平面坐标[X+Y],百年一遇水位（m）")
+            self.assertEqual(lines[0], "名称,平面坐标[X + Y],百年一遇水位（m）")
             # 默认导出坐标系 = 测量坐标系，X/Y 就是内部的 x/y（x 是北），故不换
             self.assertIn('"500.000,100.000;565.000,165.000"', lines[1])
 

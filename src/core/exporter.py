@@ -28,7 +28,7 @@ from typing import Optional
 
 from .config import Config
 from .model import ProfileLine, Project, Section, SectionResult, TerrainInfo, HydroResult
-from .interp import interpolate_xy, find_water_edge
+from .interp import edge_point
 
 
 def matlab_num2str(v: float) -> str:
@@ -45,6 +45,10 @@ COORD_SYSTEMS: dict[str, str] = {
     "survey": "测量坐标系（X=北坐标·纵向，Y=东坐标·横向）",
     "math": "数学坐标系（X=横轴·东向，Y=纵轴·北向）",
 }
+
+#: 「一维水面线淹没范围坐标」专用的图标样式码，与设计水位那套 156/172 区分开。
+ICON_HYDRO_RANGE_FOUND = 1432        # 求到了左右岸水面交点
+ICON_HYDRO_RANGE_NOT_FOUND = 2014    # 该侧岸线全在水位以下，退回该侧岸顶
 
 
 def out_xy(x: float, y: float, coord_system: str = "survey") -> tuple[float, float]:
@@ -177,9 +181,9 @@ def export_endpoint_csv(path: str, sections: list[Section],
                         results: list[SectionResult],
                         encoding: str = "utf-8-sig",
                         coord_system: str = "survey") -> None:
-    """断面起终点坐标及水位 CSV：名称,平面坐标[X+Y],百年一遇水位（m）"""
+    """断面起终点坐标及水位 CSV：名称,平面坐标[X + Y],百年一遇水位（m）"""
     with open(path, "w", encoding=encoding, newline="") as f:
-        f.write("名称,平面坐标[X+Y],百年一遇水位（m）\n")
+        f.write("名称,平面坐标[X + Y],百年一遇水位（m）\n")
         for sec, res in zip(sections, results):
             f.write(f'{sec.name},"{endpoint_xy_str(sec, coord_system)}",'
                     f'{matlab_num2str(res.design_level)}\n')
@@ -232,6 +236,45 @@ def export_hydro_csv(path: str, results: list[HydroResult]):
             writer.writerow(row)
 
 
+def export_hydro_range_csv(path: str, sections: list[Section],
+                           hydro_results: list[Optional[HydroResult]],
+                           infos: list[TerrainInfo],
+                           cfg: Config) -> int:
+    """一维水面线淹没范围坐标 CSV，返回跳过的断面数。
+
+    格式与「设计水位淹没范围坐标」完全一致（名称 / 平面坐标X / 平面坐标Y / 图标样式），
+    区别只有两点：
+      1. 水面高程取**一维推算水位** `HydroResult.ws`（不是 Hs / Hs1）；
+      2. 图标样式用专用码：
+           1432 = 该侧求到了水面交点
+           2014 = 该侧岸线全在水位以下，退回该侧岸顶（与 156/172 同一套"未找到"语义）
+
+    `hydro_results` 需与 `sections` **逐项对齐**（缺项用 None 占位）；
+    ws 为 NaN（推算失败）的断面整断面跳过，不写 Z/Y 行。
+    """
+    skipped = 0
+    with open(path, "w", encoding=cfg.csv_encoding, newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["名称", "平面坐标X", "平面坐标Y", "图标样式"])
+        for sec, hr, info in zip(sections, hydro_results, infos):
+            if hr is None or hr.ws != hr.ws:
+                skipped += 1
+                continue
+            # 左岸记 Z、右岸记 Y（原 MATLAB 的岸别记号，与坐标轴无关）
+            for side, suffix, fallback_idx in (("left", "Z", info.zmax_idx),
+                                               ("right", "Y", info.ymax_idx)):
+                pt, status = edge_point(sec, cfg, sec.z, hr.ws,
+                                        info.dmin_idx, side, fallback_idx)
+                if pt is None:
+                    skipped += 1
+                    continue
+                icon = (ICON_HYDRO_RANGE_FOUND if status == cfg.ICON_FOUND
+                        else ICON_HYDRO_RANGE_NOT_FOUND)
+                ox, oy = out_xy(pt[0], pt[1], cfg.export_coord_system)
+                w.writerow([f"{sec.name}{suffix}", f"{ox:.6f}", f"{oy:.6f}", icon])
+    return skipped
+
+
 def export_section_names_xlsx(path: str, names: list[str]) -> None:
     """断面编号参考 xlsx（对应原 xlswrite(..., 'A2')）。需要 openpyxl。"""
     try:
@@ -267,6 +310,8 @@ def export_all(project: Project,
       'range_raised': 设计水位加高淹没范围坐标.csv
       'range_design': 设计水位淹没范围坐标.csv
       'disaster': 成灾水位坐标.csv
+      'hydro1d': 一维水面线要素表.csv
+      'hydro_range': 一维水面线淹没范围坐标.csv（桌面默认不导出）
 
     如果 options 为 None，默认全部导出（如果 cfg 及 line 允许的话）。
     """
@@ -318,23 +363,50 @@ def export_all(project: Project,
             export_disaster_csv(p6, secs, res_list, info_list, cfg)
             written.append(p6)
 
-        if options.get('hydro1d', True):
-            # Try to get hydro_results from the current line object, fallback gracefully
-            # During normal execution flow from main_window, results might be cached there,
-            # but since export_all only takes project and results, we must re-compute
-            # or pass it in. Re-computing on the fly for export is safest.
+        # 一维推算：两个导出项共用**一次**重算（每线只跑一遍推算）
+        need_hydro = (options.get('hydro1d', True)
+                      or options.get('hydro_range', False))
+        if need_hydro:
             from .hydro1d import compute_line_profile
             from .model import HydroConfig
+            hydro_res: list = []
             try:
-                hydro_cfg = line.hydro_config if line.hydro_config is not None else HydroConfig()
+                hydro_cfg = (line.hydro_config if line.hydro_config is not None
+                             else HydroConfig())
                 hydro_res, _ = compute_line_profile(line, cfg, hydro_cfg)
-                if hydro_res:
-                    p7 = os.path.join(line_dir, f"{line.name}一维水面线要素表.csv")
-                    export_hydro_csv(p7, hydro_res)
-                    written.append(p7)
             except Exception as e:
                 if warnings is not None:
                     warnings.append(
-                        f"{line.name}: 一维水面线要素表导出失败（{e}）")
+                        f"{line.name}: 一维推算失败，一维相关的导出文件均未生成（{e}）")
+
+            if hydro_res:
+                if options.get('hydro1d', True):
+                    p7 = os.path.join(line_dir, f"{line.name}一维水面线要素表.csv")
+                    try:
+                        export_hydro_csv(p7, hydro_res)
+                        written.append(p7)
+                    except Exception as e:
+                        if warnings is not None:
+                            warnings.append(
+                                f"{line.name}: 一维水面线要素表导出失败（{e}）")
+
+                if options.get('hydro_range', False):
+                    # 按名字对齐到 secs：compute_line_profile 可能缺项，不能直接 zip
+                    by_name = {r.name: r for r in hydro_res}
+                    hr_list = [by_name.get(s.name) for s in secs]
+                    p8 = os.path.join(
+                        line_dir, f"{line.name}一维水面线淹没范围坐标.csv")
+                    try:
+                        skipped = export_hydro_range_csv(
+                            p8, secs, hr_list, info_list, cfg)
+                        written.append(p8)
+                        if skipped and warnings is not None:
+                            warnings.append(
+                                f"{line.name}: 一维水面线淹没范围坐标有 {skipped} 处未写出"
+                                f"（推算失败，或该侧岸线全在水位以下且无岸顶可退）")
+                    except Exception as e:
+                        if warnings is not None:
+                            warnings.append(
+                                f"{line.name}: 一维水面线淹没范围坐标导出失败（{e}）")
 
     return written

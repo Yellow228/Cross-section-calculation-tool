@@ -6,10 +6,8 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from .config import Config
-from .interp import find_water_edge, interp1_linear_extrap, interpolate_xy
+from .interp import edge_point, interp1_linear_extrap
 from .model import ProfileLine, Section, SectionResult, TerrainInfo
 from .rating import check_monotonic, compute_rating_curve
 from .terrain import analyze_terrain
@@ -59,34 +57,15 @@ def solve_section(sec: Section, cfg: Config) -> tuple[SectionResult, TerrainInfo
     z = sec.z
 
     # 左右岸水面交点（基于 Hs1 = Hs + 加高幅度）——原 MATLAB 的输出口径
-    result.left_point, result.left_status = _edge_point(
+    result.left_point, result.left_status = edge_point(
         sec, cfg, z, result.design_level_plus, info.dmin_idx, "left", info.zmax_idx)
-    result.right_point, result.right_status = _edge_point(
+    result.right_point, result.right_status = edge_point(
         sec, cfg, z, result.design_level_plus, info.dmin_idx, "right", info.ymax_idx)
 
     # 设计水位 Hs 处的交点（新增）：用于「设计水位淹没范围坐标」，与 Hs1 无关。
-    result.left_point_hs, result.left_status_hs = _edge_point(
+    result.left_point_hs, result.left_status_hs = edge_point(
         sec, cfg, z, result.design_level, info.dmin_idx, "left", info.zmax_idx)
-    result.right_point_hs, result.right_status_hs = _edge_point(
+    result.right_point_hs, result.right_status_hs = edge_point(
         sec, cfg, z, result.design_level, info.dmin_idx, "right", info.ymax_idx)
 
     return result, info
-
-
-def _edge_point(sec: Section, cfg: Config, z: list[float], H: float,
-                dmin_idx: int, direction: str,
-                fallback_idx: int) -> tuple[Optional[tuple[float, float]], int]:
-    """求水位 H 在一侧的水面交点，返回 (点, 图标样式)。
-
-    找得到交点就线性插出平面坐标；找不到（该侧岸线全在水位以下）则退回该侧的
-    最高点，图标样式标记为"未找到"，与原 MATLAB 行为一致。
-
-    抽成函数是为了让 Hs 与 Hs1 两套交点共用同一判定——两处各写一遍必然分叉。
-    """
-    edge = find_water_edge(z, H, dmin_idx, direction)
-    if edge is not None:
-        i1, i2 = edge
-        return interpolate_xy(sec.x, sec.y, z, i1, i2, H), cfg.ICON_FOUND
-    if fallback_idx >= 0:
-        return (sec.x[fallback_idx], sec.y[fallback_idx]), cfg.ICON_NOT_FOUND
-    return None, cfg.ICON_NOT_FOUND
