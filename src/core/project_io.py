@@ -130,6 +130,42 @@ def _flist_back(vals) -> list[float]:
     return [_nan(v) for v in (vals or [])]
 
 
+def _loss_overrides_to_dict(raw) -> dict:
+    """{(断面名): (收缩, 扩张)} -> JSON 对象 {名: [收缩, 扩张]}（tuple 转 list）。"""
+    out = {}
+    for name, pair in (raw or {}).items():
+        try:
+            out[str(name)] = [float(pair[0]), float(pair[1])]
+        except (TypeError, IndexError, ValueError):
+            continue
+    return out
+
+
+def _loss_overrides_from_dict(raw) -> dict:
+    """JSON 对象 -> {(断面名): (收缩, 扩张)}。
+
+    脏项（不是两元素、转不成数字、NaN、负数）一律跳过——
+    工程文件里一个坏键不该让整份工程打不开。负数在这里就拦掉：
+    负系数等于给水头**加**能量，物理上不成立。
+    """
+    out = {}
+    if not isinstance(raw, dict):
+        return out
+    for name, pair in raw.items():
+        if not isinstance(name, str) or not name.strip():
+            continue
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            continue
+        try:
+            c, e = float(pair[0]), float(pair[1])
+        except (TypeError, ValueError):
+            continue
+        if c != c or e != e or c < 0 or e < 0:
+            continue
+        out[name] = (c, e)
+    return out
+
+
 # ---------------------------------------------------------------- 序列化
 
 def _params_to_dict(p: SectionParams) -> dict:
@@ -246,6 +282,9 @@ def project_to_dict(project: Project, cfg: Config,
                 "q_override": hc.q_override,
                 "downstream_kind": hc.downstream_kind,
                 "downstream_name": hc.downstream_name,
+                "c_contract": hc.c_contract,
+                "c_expand": hc.c_expand,
+                "loss_overrides": _loss_overrides_to_dict(hc.loss_overrides),
             }
         lines.append(line_dict)
 
@@ -298,7 +337,10 @@ def dict_to_project(data: dict) -> tuple[Project, Config, dict]:
                 boundary_value=hc.get("boundary_value", float("nan")),
                 q_override=hc.get("q_override"),
                 downstream_kind=hc.get("downstream_kind", "lowest"),
-                downstream_name=hc.get("downstream_name")
+                downstream_name=hc.get("downstream_name"),
+                c_contract=hc.get("c_contract", 0.1),
+                c_expand=hc.get("c_expand", 0.3),
+                loss_overrides=_loss_overrides_from_dict(hc.get("loss_overrides"))
             )
         else:
             line.hydro_config = HydroConfig()

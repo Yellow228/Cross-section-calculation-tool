@@ -64,7 +64,39 @@ def _reach_chainage(line: ProfileLine, infos: list[TerrainInfo], ds_idx: int) ->
     max_d = max(res)
     return [max_d - di for di in res]
 
-def _to_cross_section(sec: Section, info: TerrainInfo, dist_ds: float):
+def _loss_coef(hydro: HydroConfig, sec_name: str) -> tuple[float, float]:
+    """取某断面的 (收缩系数, 扩张系数)。
+
+    查找顺序：逐断面覆盖 `loss_overrides[断面名]` → 线级默认 `c_contract/c_expand`。
+    覆盖值非法（NaN / 负数 / 结构不对）时静默回退到线级默认——系数只在
+    一维推算里用，一个脏值不该让整条线算不出来。
+
+    另见 `HydroConfig.loss_overrides` 的说明：无键 = 用默认，这是"留空"的语义基础。
+    """
+    dc = getattr(hydro, "c_contract", 0.1)
+    de = getattr(hydro, "c_expand", 0.3)
+    if dc is None or dc != dc or dc < 0:
+        dc = 0.1
+    if de is None or de != de or de < 0:
+        de = 0.3
+
+    overrides = getattr(hydro, "loss_overrides", None) or {}
+    pair = overrides.get(sec_name)
+    if not pair:
+        return dc, de
+    try:
+        c, e = float(pair[0]), float(pair[1])
+    except (TypeError, IndexError, ValueError):
+        return dc, de
+    if c != c or c < 0:
+        c = dc
+    if e != e or e < 0:
+        e = de
+    return c, e
+
+
+def _to_cross_section(sec: Section, info: TerrainInfo, dist_ds: float,
+                      c_contract: float = 0.1, c_expand: float = 0.3):
     from raslite import CrossSection
     points = [(float(s), float(z)) for s, z in zip(sec.s, sec.z)]
     p = sec.params
@@ -89,7 +121,7 @@ def _to_cross_section(sec: Section, info: TerrainInfo, dist_ds: float):
         n_left=p.roughness_left if p.roughness_left and p.roughness_left == p.roughness_left else n_main,
         n_right=p.roughness_right if p.roughness_right and p.roughness_right == p.roughness_right else n_main,
         reach_lengths=(dist_ds, dist_ds, dist_ds),
-        c_contract=0.1, c_expand=0.3,
+        c_contract=c_contract, c_expand=c_expand,
     )
 
 def _boundary(hydro: HydroConfig, sec_bound: Section, q: float, warnings=None) -> tuple:
@@ -144,6 +176,19 @@ def compute_line_profile(line: ProfileLine, cfg: Config, hydro: HydroConfig) -> 
             f"[{line.name}] 自动判定的下游断面位于河道中部，"
             f"可能因中游深潭导致流向误判，建议手动指定下游断面")
 
+    # 逐断面局部损失系数的"悬空键"：断面改过名 / 被删掉后，原来的覆盖值
+    # 就成了死键——不报出来用户会以为设置还在生效。键本身保留（改名改回来还能用）。
+    overrides = getattr(hydro, "loss_overrides", None) or {}
+    if overrides:
+        names = {s.name for s in line.sections}
+        dangling = [k for k in overrides if k not in names]
+        if dangling:
+            head = "、".join(dangling[:3])
+            more = f" 等 {len(dangling)} 个" if len(dangling) > 3 else ""
+            warnings_out.append(
+                f"[{line.name}] 有断面的局部损失系数未生效（断面名已不存在："
+                f"{head}{more}）")
+
     ras_chainage = _reach_chainage(line, infos, ds_idx)
 
     # sorted_items 升序 = 上游→下游（chainage 下游最大，见 _reach_chainage）
@@ -171,7 +216,9 @@ def compute_line_profile(line: ProfileLine, cfg: Config, hydro: HydroConfig) -> 
             ds_neighbor = sorted_items[sort_idx + 1]   # 下游相邻
             dist_ds = ras_chainage[ds_neighbor] - ras_chainage[original_idx]
 
-        xs = _to_cross_section(sec, info, dist_ds)
+        # 局部损失系数：该断面 → 下游那一跨（最下游断面的值用不到，见 HydroConfig）
+        c_c, c_e = _loss_coef(hydro, sec.name)
+        xs = _to_cross_section(sec, info, dist_ds, c_c, c_e)
         xs.chainage = ras_chainage[original_idx]
         cross_sections.append(xs)
 

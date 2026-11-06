@@ -23,7 +23,7 @@ from core.rating import compute_rating_curve, hvec_row_counts, matlab_colon
 from core.solver import solve_section
 from core.terrain import analyze_terrain
 from core.chainage import chainage_at_distance, compute_chainage, rebase_chainage
-from core.model import ProfileData, ProfileLine, Project
+from core.model import ProfileData, ProfileLine, Project, HydroConfig
 from core.reader import (_dedupe_names, blocks_to_sections, classify,
                          detect_xy_order, split_blocks)
 from core.spatial import assign_by_intersection, find_intersection, segment_intersection
@@ -453,6 +453,100 @@ class TestChainage(unittest.TestCase):
         ch = compute_chainage(secs, infos, origin="first")
         self.assertAlmostEqual(ch[0], 0.0)
         self.assertAlmostEqual(ch[1], 50.0)
+
+
+class TestLossCoefficients(unittest.TestCase):
+    """局部损失系数（收缩 / 扩张）的覆盖机制。
+
+    两条容易搞错的语义，这里各钉一条：
+    1. 系数存在**上游断面**、作用于「本断面 → 下游断面」这一跨；
+    2. 没写键 = 用线级默认（0.1 / 0.3）。**"留空"与"显式填成默认值"不同**：
+       后者会把该断面钉死，将来改默认不再跟随。
+    """
+
+    @staticmethod
+    def _line(q: float = 300.0) -> ProfileLine:
+        """窄(40m) → 宽(120m) → 中(80m) 的矩形渠道，缓流、有明显缩扩。"""
+        def rect(name, width, z_bed, y0):
+            return Section(
+                name=name, x=[0.0, 0.0, width, width], y=[y0] * 4,
+                s=[0.0, 0.01, width + 0.01, width + 0.02],
+                z=[z_bed + 12.0, z_bed, z_bed, z_bed + 12.0],
+                params=SectionParams(name=name, slope=0.001,
+                                     roughness=0.03, design_q=q))
+
+        secs = [rect("S1", 40, 100.0, 0.0),
+                rect("S2", 120, 99.9, 150.0),
+                rect("S3", 80, 99.8, 300.0)]
+        return ProfileLine(name="L1", sections=secs,
+                           chainage=[0.0, 100.0, 200.0])
+
+    def test_default_coefficients(self):
+        """默认就是 HEC-RAS 常用值 0.1 / 0.3，没写键的断面取它。"""
+        from core.hydro1d import _loss_coef
+
+        cfg = HydroConfig()
+        self.assertEqual(cfg.c_contract, 0.1)
+        self.assertEqual(cfg.c_expand, 0.3)
+        self.assertEqual(_loss_coef(cfg, "任意断面"), (0.1, 0.3))
+
+    def test_override_reaches_engine(self):
+        """覆盖值必须真的改变水面线——只存进配置不算数。"""
+        from core.hydro1d import compute_line_profile
+
+        cfg = Config()
+        base = dict(regime="subcritical", boundary_kind="normal",
+                    boundary_value=float("nan"))
+        line = self._line()
+        r0, _ = compute_line_profile(line, cfg, HydroConfig(**base))
+        r1, _ = compute_line_profile(
+            line, cfg, HydroConfig(loss_overrides={"S2": (0.5, 0.3)}, **base))
+        ws0 = {r.name: r.ws for r in r0}
+        ws1 = {r.name: r.ws for r in r1}
+        self.assertGreater(abs(ws1["S2"] - ws0["S2"]), 1e-3,
+                           "把 S2 的收缩系数从 0.1 调到 0.5，水位应当有可见变化")
+
+    def test_invalid_override_falls_back(self):
+        """NaN / 负数一律回退默认，不让一个脏值把整条线算废。"""
+        from core.hydro1d import _loss_coef
+
+        cfg = HydroConfig(loss_overrides={
+            "S1": (float("nan"), -1.0),     # 两个都不合法
+            "S2": ("x", 0.4),               # 结构不对
+        })
+        self.assertEqual(_loss_coef(cfg, "S1"), (0.1, 0.3))
+        self.assertEqual(_loss_coef(cfg, "S2"), (0.1, 0.3))
+
+    def test_dangling_key_warns(self):
+        """断面改名/删除后，残留的键要报出来，否则用户以为设置还在生效。"""
+        from core.hydro1d import compute_line_profile
+
+        line = self._line()
+        _, warns = compute_line_profile(
+            line, Config(),
+            HydroConfig(regime="subcritical", boundary_kind="normal",
+                        boundary_value=float("nan"),
+                        loss_overrides={"GONE": (0.2, 0.4)}))
+        self.assertTrue(any("未生效" in w for w in warns), warns)
+
+    def test_project_roundtrip(self):
+        """工程文件往返：dict 里的 tuple 会变成 JSON 数组，读回要还原成 tuple。"""
+        import tempfile
+
+        line = self._line()
+        line.hydro_config = HydroConfig(loss_overrides={"S2": (0.25, 0.45)})
+        proj = Project(profile_lines=[line])
+
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "loss.dmprj")
+            project_io.save_project(path, proj, Config())
+            back, _, _ = project_io.load_project(path)
+
+        hc = back.profile_lines[0].hydro_config
+        self.assertEqual(hc.loss_overrides, {"S2": (0.25, 0.45)})
+        # 旧工程没有这两个键时，读出来是默认值
+        self.assertEqual(hc.c_contract, 0.1)
+        self.assertEqual(hc.c_expand, 0.3)
 
 
 class TestExporter(unittest.TestCase):

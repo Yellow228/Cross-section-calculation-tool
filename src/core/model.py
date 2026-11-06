@@ -332,6 +332,22 @@ class HydroConfig:
     downstream_kind: str = "lowest"      # lowest / first / last / name
     downstream_name: Optional[str] = None  # kind=="name" 时生效
 
+    # ---------------- 局部水头损失（收缩 / 扩张）----------------
+    # 线级默认：`loss_overrides` 里没有单独指定的断面，都用这两个值。
+    # 取值参照 HEC-RAS 天然河道平缓过渡段的常用值。
+    c_contract: float = 0.1
+    c_expand: float = 0.3
+    # 逐断面覆盖：{断面名: (收缩, 扩张)}。
+    #
+    # ⚠ **只在确实要单独调的断面上写键**，没有键就用上面的线级默认——
+    #   "留空"与"显式填一个等于默认值的数"语义不同：后者会把这个断面
+    #   钉死，之后再改线级默认它也不会跟着变。
+    # ⚠ 系数存在**本断面**、作用于"本断面 → 下游断面"这一跨（HEC-RAS 约定），
+    #   所以最下游断面的值永远用不到。
+    # ⚠ 用断面名而不是索引做键：断面增删、重排都不会让覆盖错位；代价是
+    #   断面改名会让该键失效——`compute_line_profile` 会就此出一条告警。
+    loss_overrides: dict = field(default_factory=dict)
+
 @dataclass
 class HydroResult:
     name: str

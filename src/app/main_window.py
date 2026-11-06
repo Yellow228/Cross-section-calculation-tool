@@ -35,6 +35,7 @@ from .profile_view import ProfileView
 from .rating_view import RatingView
 from .section_editor import SectionEditorDialog
 from .section_view import PICK_LABELS, SectionView
+from .loss_dialog import LossDialog
 
 # 载入数据后自动填补空参数用的默认值（原「参数集 xlsx」不提供，见 Q12）。
 # 只是让三张图不至于空着的兜底值，用户需按实际取值修改。
@@ -144,6 +145,11 @@ class MainWindow(QMainWindow):
         self.dlg_hydro1d.config_applied.connect(self._on_hydro_applied)
         self.dlg_hydro1d.groupChanged.connect(self._on_manual_group_changed)
 
+        # 逐断面局部损失系数（收缩/扩张）：与一维推算配套，只影响一维水面线
+        self.dlg_loss = LossDialog(self)
+        self.dlg_loss.applied.connect(self._on_loss_applied)
+        self.dlg_loss.groupChanged.connect(self._on_manual_group_changed)
+
         self.dlg_settings.changed.connect(self._on_settings_changed)
         self.dlg_settings.thresholdsChanged.connect(self._on_thresholds_changed)
         self.dlg_settings.exportChanged.connect(self._on_export_settings_changed)
@@ -205,6 +211,11 @@ class MainWindow(QMainWindow):
         act_hydro = mb.addAction("一维水面线推算")
         act_hydro.setToolTip("RASlite 引擎：一维水面线推算")
         act_hydro.triggered.connect(self._open_hydro_dialog)
+        act_loss = mb.addAction("局部损失系数")
+        act_loss.setToolTip(
+            "逐断面设置收缩/扩张系数。留空 = 用默认值（收缩 0.1 / 扩张 0.3）；"
+            "系数作用于「本断面→下游断面」这一跨，最下游断面的值不生效。")
+        act_loss.triggered.connect(self._open_loss_dialog)
         act_zone = mb.addAction("分区调节")
         act_zone.setToolTip(
             "手动指定深泓点与分区边界。只能在断面形态图上拾取实测测点；"
@@ -977,6 +988,55 @@ class MainWindow(QMainWindow):
         # 会漏掉横断面图）。
         self._refresh_current_views()
 
+    def _open_loss_dialog(self):
+        """打开逐断面局部损失系数面板（非模态，只影响一维推算）。"""
+        if self.project is None:
+            QMessageBox.information(self, "提示", "请先载入数据。")
+            return
+        if not self.project.profile_lines:
+            QMessageBox.information(self, "提示", "工程里没有纵断面线。")
+            return
+        self.dlg_loss.set_context(self.project, self.infos,
+                                  max(self.lst_lines.currentRow(), 0))
+        self.dlg_loss.popup()
+
+    def _on_loss_applied(self, line_idx: int, cfg):
+        """写回该线的 loss_overrides。
+
+        与「推算」按钮的区别：这里**不弹结果对话框**（用户可能连着调几次），
+        只在已经推算过的线上静默重算一次，把新结果铺到图上。
+        """
+        if self.project is None:
+            return
+        if not (0 <= line_idx < len(self.project.profile_lines)):
+            return
+
+        line = self.project.profile_lines[line_idx]
+        line.hydro_config = cfg
+        self._set_dirty()
+
+        if not hasattr(self, "hydro_results"):
+            self.hydro_results = {}
+        if line.name not in self.hydro_results:
+            self.lbl_status.setText(
+                f"「{line.name}」的局部损失系数已保存；该线尚未推算，点「一维水面线推算」查看结果。")
+            return
+
+        from core.hydro1d import compute_line_profile
+        try:
+            res_list, warns = compute_line_profile(line, self.cfg, cfg)
+        except Exception as e:                       # noqa: BLE001
+            self.lbl_status.setText(f"一维推算失败：{e}")
+            return
+        self.hydro_results[line.name] = res_list
+        self._refresh_current_views()
+
+        if warns:
+            self.lbl_status.setText(
+                f"局部损失系数已更新并重算；告警：" + "；".join(warns[:2]))
+        else:
+            self.lbl_status.setText(f"「{line.name}」局部损失系数已更新，一维水面线已重算。")
+
     def _open_slope_dialog(self):
         """打开比降推算面板。先把当前工程喂进去再弹，否则表是空的。"""
         if self.project is None:
@@ -1137,6 +1197,9 @@ class MainWindow(QMainWindow):
         # （project 为 None 时窗口自动清空并禁用「推算」）
         self.dlg_hydro1d.set_project(self.project)
         self.dlg_hydro1d.set_current_line(idx)
+        # 局部损失系数面板：同一套"只推上下文、不自己维护选中"的做法。
+        # 同一组重复推送时面板内部会跳过重建，不会抹掉用户正在编辑的格子。
+        self.dlg_loss.set_context(self.project, self.infos, idx)
 
     def _current_section(self):
         ln = self._current_line()
